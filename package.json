@@ -1,0 +1,76 @@
+{
+  "name": "@runmu.sh/ext-feeds",
+  "version": "1.0.0",
+  "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out and clear.",
+  "keywords": [
+    "feeds",
+    "rules",
+    "routing",
+    "spawns",
+    "panel"
+  ],
+  "license": "MIT",
+  "homepage": "https://runmu.sh/marketplace/x/feeds",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runmu-sh/ext-feeds.git"
+  },
+  "bugs": {
+    "url": "https://github.com/runmu-sh/ext-feeds/issues"
+  },
+  "type": "module",
+  "exports": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/build.mjs --check",
+    "test": "node --experimental-strip-types --test \"tests/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.7.1",
+    "@runmu.sh/dev": "^0.1.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "vue": "^3.5.0"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "muclient": {
+    "id": "feeds",
+    "api": "^1.7",
+    "source": "src/index.ts",
+    "displayName": "Feeds",
+    "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out and clear.",
+    "categories": [
+      "interface",
+      "communication"
+    ],
+    "contributes": {
+      "panels": [
+        {
+          "id": "feeds",
+          "title": "Feeds",
+          "defaultPosition": "right-bottom",
+          "order": 50
+        },
+        {
+          "id": "feed",
+          "title": "Feed",
+          "defaultPosition": "float",
+          "inViewsMenu": false
+        }
+      ]
+    },
+    "capabilities": [
+      "read-output"
+    ],
+    "publisher": "bitmuse"
+  }
+}
