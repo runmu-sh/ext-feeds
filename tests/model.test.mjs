@@ -23,11 +23,22 @@ test('copy follows the Underspire Feeds view', () => {
   assert.equal(COPY.jumpLatest, 'Jump to the latest line');
 });
 
+test('1.2.0 copy: the empty panel explains, the help strip names every tool, Clear says how much goes', () => {
+  assert.equal(COPY.introHead, 'No feeds yet');
+  assert.match(COPY.introText, /Settings → Feeds/);
+  assert.equal(COPY.introSteps.length, 3);
+  assert.deepEqual(COPY.helpRows.map(([k]) => k), [COPY.search, COPY.times, COPY.popOut, COPY.rules, COPY.clear]);
+  assert.equal(COPY.help, 'Help');
+  assert.equal(COPY.confirmClearBody('OOC', 1), '1 line in “OOC” goes away on this device. The rule keeps filling it.');
+  assert.equal(COPY.emptyHint('OOC'), 'Lines your rules send to “OOC” will show up here.');
+  assert.equal(COPY.tabTip('OOC', 2), 'OOC · 2 lines · double-click to pop out');
+});
+
 test('every CSS rule is scoped to .ext-panel[data-ext="feeds"] .mu-feeds, tokens only, no radius', () => {
   assert.equal(SCOPE, '.ext-panel[data-ext="feeds"]');
   for (const r of FEEDS_CSS.split('\n')) {
-    const sel = r.startsWith('@media') ? r.slice(r.indexOf('{') + 1).trim() : r;
-    for (const part of sel.slice(0, sel.indexOf('{')).split(',')) assert.ok(part.trim().startsWith(`${SCOPE} .mu-feeds`), part);
+    const body = r.startsWith('@') ? r.slice(r.indexOf('{') + 1, r.lastIndexOf('}')).trim() : r;
+    for (const rule of body.split('}')) { if (!rule.trim()) continue; for (const part of rule.slice(0, rule.indexOf('{')).split(',')) assert.ok(part.trim().startsWith(`${SCOPE} .mu-feeds`), part); }
   }
   assert.doesNotMatch(FEEDS_CSS, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   assert.doesNotMatch(FEEDS_CSS, /border-radius:\s*[1-9]/);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+- The empty panel explains what a feed is and the three steps to one, above **Add a feed**, instead of a lone button.
+- A feed with no lines yet says what will land there and links to the rules.
+- A **Help** tool toggles a strip that explains Search, Times, Pop out, Rules and Clear, the 500-line cap, badges and the keyboard.
+- Tabs: the unread badge sits apart from the name, hovering shows the line count, and a double-click pops the feed out. Long feed names are cut with an ellipsis.
+- Clear says how many lines go and that the rule keeps filling the feed.
+- The tabs and tools stack into two tidy rows in a narrow dock (a container query), with no half-wrapped buttons.
+- README: a Getting started section with the rule syntax and worked examples.
+
 ## 1.1.0
 
 - Clearing a feed asks in μClient's own dialog, with a red Clear button, instead of the browser's.

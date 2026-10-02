@@ -1,7 +1,7 @@
 {
   "name": "@runmu.sh/ext-feeds",
-  "version": "1.1.0",
-  "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out and clear.",
+  "version": "1.2.0",
+  "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out, clear and built-in help.",
   "keywords": [
     "feeds",
     "rules",
@@ -47,7 +47,7 @@
     "api": "^1.12",
     "source": "src/index.ts",
     "displayName": "Feeds",
-    "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out and clear.",
+    "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out, clear and built-in help.",
     "categories": [
       "interface",
       "communication"

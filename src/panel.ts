@@ -1,7 +1,8 @@
 /**
  * The Feeds panel as a Vue component with render functions (`vue` is the host's, through the import map). A tab per
- * feed with unread badges, Search, Times, Pop out, Rules, Clear, the latest pill, and "Add a feed" when there is none.
- * With `params.feed` (the `feed` panel) it shows that one feed only.
+ * feed with unread badges (tooltip: line count; double-click pops it out), Search, Times, Pop out, Rules, Clear, a `?`
+ * help strip, the latest pill, an explanation with "Add a feed" when there is no feed, and a hint with Rules in a feed
+ * that has no lines yet. With `params.feed` (the `feed` panel) it shows that one feed only.
  */
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, ref, shallowRef, watch, type VNode } from 'vue';
 import type { Dispose, FeedLineView, FeedsView, Mu } from '@muclient/sdk';
@@ -37,7 +38,7 @@ export function createPanel(mu: Mu, reading: Readers) {
       watch(labels, (ls) => { sel.value = keepSelection(ls, sel.value); }, { immediate: true });
 
       const lines = computed<FeedLineView[]>(() => (sel.value ? view.value?.lines[sel.value] ?? [] : []));
-      const searching = ref(false), q = ref(''), times = ref(false);
+      const searching = ref(false), q = ref(''), times = ref(false), helping = ref(false);
       const shown = computed(() => filterLines(lines.value, q.value));
 
       const box = ref<HTMLElement | null>(null);
@@ -87,13 +88,14 @@ export function createPanel(mu: Mu, reading: Readers) {
       const clear = async () => {
         const sid = props.sid, label = sel.value;
         if (!sid || !label) return;
-        if (await mu.ui.confirm({ title: COPY.confirmClear(label), confirm: COPY.clear, danger: true })) mu.feeds.clear(label, sid);
+        const n = view.value?.lines[label]?.length ?? 0;
+        if (await mu.ui.confirm({ title: COPY.confirmClear(label), body: COPY.confirmClearBody(label, n), confirm: COPY.clear, danger: true })) mu.feeds.clear(label, sid);
       };
       /** Rules and "Add a feed" open Settings → Feeds. */
       const editRules = () => mu.commands.run('settings.open', 'feeds');
-      const popOut = () => {
-        if (!sel.value) return;
-        mu.panels.open('feed', { feed: sel.value, instance: sel.value }, { title: COPY.popTitle(sel.value), ...(props.sid ? { sid: props.sid } : {}) });
+      const popOut = (label = sel.value) => {
+        if (!label || solo.value) return;
+        mu.panels.open('feed', { feed: label, instance: label }, { title: COPY.popTitle(label), ...(props.sid ? { sid: props.sid } : {}) });
       };
 
       // Stop reading here (the host also resets its own state on dispose). Another panel still reading keeps it.
@@ -114,7 +116,12 @@ export function createPanel(mu: Mu, reading: Readers) {
         const ls = labels.value, cur = sel.value;
         if (!ls.length) {
           return h('div', { class: 'mu-feeds', 'data-testid': 'feeds-panel' }, [
-            h('div', { class: 'intro' }, [h('button', { type: 'button', class: [c.cmd, 'primary', 'make'], 'data-testid': 'feeds-add', onClick: editRules }, COPY.addFeed)]),
+            h('div', { class: 'intro', 'data-testid': 'feeds-intro' }, [
+              h('p', { class: 'ihead' }, COPY.introHead),
+              h('p', null, COPY.introText),
+              h('ol', null, COPY.introSteps.map((t, i) => h('li', { key: i }, t))),
+              h('button', { type: 'button', class: [c.cmd, 'primary', 'make'], 'data-testid': 'feeds-add', onClick: editRules }, COPY.addFeed),
+            ]),
           ]);
         }
         const bar = h('div', { class: 'fbar' }, [
@@ -122,19 +129,21 @@ export function createPanel(mu: Mu, reading: Readers) {
             ? h('span', { class: 'solo' }, solo.value)
             : h('div', { class: 'ftabs', role: 'tablist', 'aria-label': COPY.title }, ls.map((l, i) => {
               const n = unreadOf(view.value, l, cur);
+              const total = view.value?.lines[l]?.length ?? 0;
               return h('button', {
-                key: l, type: 'button', role: 'tab', class: ['ftab', { on: l === cur }], 'data-testid': 'feed-tab',
+                key: l, type: 'button', role: 'tab', class: ['ftab', { on: l === cur, unread: n > 0 }], 'data-testid': 'feed-tab',
                 ref: (el: unknown) => { if (el) tabs.set(l, el as HTMLElement); else tabs.delete(l); },
-                'aria-selected': l === cur, tabindex: l === cur ? 0 : -1, 'aria-label': tabLabel(l, n),
-                onClick: () => { sel.value = l; }, onKeydown: (e: KeyboardEvent) => tabKey(e, i),
-              }, [l, n ? h('span', { class: ['fbadge', c.count], 'aria-hidden': 'true' }, String(n)) : null]);
+                'aria-selected': l === cur, tabindex: l === cur ? 0 : -1, 'aria-label': tabLabel(l, n), title: COPY.tabTip(l, total),
+                onClick: () => { sel.value = l; }, onDblclick: () => popOut(l), onKeydown: (e: KeyboardEvent) => tabKey(e, i),
+              }, [h('span', { class: 'fname' }, l), n ? h('span', { class: ['fbadge', c.count], 'aria-hidden': 'true' }, String(n)) : null]);
             })),
           h('span', { class: 'tools', role: 'toolbar', 'aria-label': 'Feed tools' }, [
             tool(COPY.search, { 'aria-pressed': searching.value, 'aria-label': 'Search this feed', title: 'search', onClick: toggleSearch }, searching.value),
             tool(COPY.times, { 'aria-pressed': times.value, 'aria-label': 'Timestamps', title: 'timestamps', onClick: () => { times.value = !times.value; } }, times.value),
-            !solo.value && cur ? tool(COPY.popOut, { title: 'own panel', 'aria-label': `Open ${cur} in its own panel`, 'data-testid': 'feed-popout', onClick: popOut }) : null,
-            tool(COPY.rules, { 'aria-label': 'Edit feed rules', title: 'rules', onClick: editRules }),
-            cur ? tool(COPY.clear, { title: 'clear', 'aria-label': `Clear ${cur} feed`, 'data-testid': 'feed-clear', onClick: () => { void clear(); } }) : null,
+            !solo.value && cur ? tool(COPY.popOut, { title: 'this feed in its own panel', 'aria-label': `Open ${cur} in its own panel`, 'data-testid': 'feed-popout', onClick: () => popOut() }) : null,
+            tool(COPY.rules, { 'aria-label': 'Edit feed rules', title: 'edit what goes where (Settings → Feeds)', onClick: editRules }),
+            cur ? tool(COPY.clear, { title: 'empty this feed', 'aria-label': `Clear ${cur} feed`, 'data-testid': 'feed-clear', onClick: () => { void clear(); } }) : null,
+            tool(COPY.help, { 'aria-pressed': helping.value, 'aria-label': COPY.helpTitle, title: 'what the buttons do', 'data-testid': 'feed-help', onClick: () => { helping.value = !helping.value; } }, helping.value),
           ]),
         ]);
         const searchRow = searching.value ? h('div', { class: 'fsearch' }, [
@@ -146,6 +155,10 @@ export function createPanel(mu: Mu, reading: Readers) {
           }),
           h('span', { class: 'cnt', 'aria-live': 'polite' }, [String(shown.value.length), ' ', h('span', { class: 'sr-only' }, 'matching lines')]),
         ]) : null;
+        const helpRow = helping.value ? h('div', { class: 'fhelp', 'data-testid': 'feed-help-strip', role: 'note', 'aria-label': COPY.helpTitle }, [
+          h('dl', null, COPY.helpRows.flatMap(([k, v]) => [h('dt', { key: `${k}:t` }, k), h('dd', { key: `${k}:d` }, v)])),
+          h('p', null, COPY.helpNote),
+        ]) : null;
         const rows = shown.value.map((l) => h('div', { key: l.id, class: ['fline', l.rowCls], 'data-testid': 'feed-line' }, [
           times.value ? h('span', { class: 'ts' }, hhmmss(l.ts)) : null,
           ...l.spans.map(spanOf),
@@ -156,12 +169,16 @@ export function createPanel(mu: Mu, reading: Readers) {
           ...(p.quiet ? { 'aria-label': COPY.jumpLatest } : {}),
         }, p.text) : null;
         return h('div', { class: 'mu-feeds', 'data-testid': 'feeds-panel' }, [
-          bar, searchRow,
+          bar, searchRow, helpRow,
           h('div', { class: 'lines-wrap' }, [
             h('div', {
               ref: box, class: 'flines', role: 'log', 'aria-live': 'off', tabindex: 0, 'aria-label': `${cur} feed`, 'data-focus-region': 'feeds',
               onScroll, onWheel: (e: WheelEvent) => { if (e.deltaY < 0) setAtEnd(false); },
-            }, [...rows, shown.value.length ? null : h('p', { class: [c.empty, 'fempty'] }, q.value.trim() ? COPY.noMatches : COPY.empty)]),
+            }, [
+              ...rows,
+              shown.value.length ? null : h('p', { class: [c.empty, 'fempty'] }, q.value.trim() ? COPY.noMatches : COPY.empty),
+              shown.value.length || q.value.trim() ? null : h('p', { class: 'fempty-hint', 'data-testid': 'feed-empty-hint' }, [COPY.emptyHint(cur), ' ', h('button', { type: 'button', class: c.cmd, onClick: editRules }, COPY.rules)]),
+            ]),
             pill,
           ]),
         ]);
