@@ -3,27 +3,36 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  COPY, FEEDS_CSS, filterLines, hasLines, hhmmss, keepSelection, labelsOf, nearEnd, newTail, soloOf, stepTail,
-  tabLabel, tabTarget, unreadOf, watchFirstLines,
+  COPY, FEEDS_CSS, SCOPE, filterLines, hasLines, hhmmss, keepSelection, labelsOf, nearEnd, newTail, onFirstLine, pillOf,
+  readers, readingOf, soloOf, stepTail, tabLabel, tabTarget, unreadOf,
 } from '../src/model.ts';
 
 const line = (id, text) => ({ id, ts: 0, text, spans: [{ text }] });
 const view = (lines = {}, unread = {}, labels = Object.keys(lines)) => ({ labels, lines, unread });
 
-test('copy is the Feeds panel part of rules/copy.ts', () => {
+test('copy follows the Underspire Feeds view', () => {
   assert.deepEqual(
-    [COPY.search, COPY.times, COPY.rules, COPY.popOut, COPY.clear, COPY.addFeed, COPY.empty, COPY.noMatches],
-    ['Search', 'Times', 'Rules', 'Pop out', 'Clear', 'Add a feed', 'Empty.', 'No matches.'],
+    [COPY.search, COPY.times, COPY.rules, COPY.popOut, COPY.clear, COPY.addFeed, COPY.empty, COPY.noMatches, COPY.title],
+    ['Search', 'Times', 'Rules', 'Pop out', 'Clear', 'Add a feed', 'Empty.', 'No matches.', 'Feeds'],
   );
   assert.equal(COPY.latest(1), '1 new line ↓');
   assert.equal(COPY.latest(3), '3 new lines ↓');
   assert.equal(COPY.confirmClear('OOC'), 'Clear OOC?');
+  assert.equal(COPY.popTitle('OOC'), 'Feed: OOC');
+  assert.equal(COPY.searchIn('OOC'), 'Search OOC');
+  assert.equal(COPY.jumpLatest, 'Jump to the latest line');
 });
 
-test('every CSS rule sits under .mu-feeds and uses tokens only', () => {
-  const rules = FEEDS_CSS.split('\n').map((l) => l.trim()).filter(Boolean);
-  for (const r of rules) assert.match(r, /^\.mu-feeds[ .{:]/, r);
+test('every CSS rule is scoped to .ext-panel[data-ext="feeds"] .mu-feeds, tokens only, no radius', () => {
+  assert.equal(SCOPE, '.ext-panel[data-ext="feeds"]');
+  for (const r of FEEDS_CSS.split('\n')) {
+    const sel = r.startsWith('@media') ? r.slice(r.indexOf('{') + 1).trim() : r;
+    for (const part of sel.slice(0, sel.indexOf('{')).split(',')) assert.ok(part.trim().startsWith(`${SCOPE} .mu-feeds`), part);
+  }
   assert.doesNotMatch(FEEDS_CSS, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+  assert.doesNotMatch(FEEDS_CSS, /border-radius:\s*[1-9]/);
+  // only colour transitions
+  for (const m of FEEDS_CSS.matchAll(/transition:([^;]+);/g)) for (const t of m[1].split(',')) assert.match(t.trim(), /^(color|background-color) \.12s/);
 });
 
 test('tabTarget: arrows wrap, Home and End, other keys ignored', () => {
@@ -96,15 +105,61 @@ test('hasLines', () => {
   assert.equal(hasLines(view({ a: [], b: [line(1, 'x')] })), true);
 });
 
-/** A fake mu with sessions and feeds; `push(sid, label, line)` notifies that session's watchers. */
+test('pill: none at the end, the count with news, a quiet arrow without', () => {
+  assert.equal(pillOf({ ...newTail(), atEnd: true, fresh: 3 }), null);
+  assert.deepEqual(pillOf({ ...newTail(), atEnd: false, fresh: 2 }), { quiet: false, text: '2 new lines ↓' });
+  assert.deepEqual(pillOf({ ...newTail(), atEnd: false, fresh: 0 }), { quiet: true, text: '↓' });
+});
+
+test('readingOf: the selected feed only while at its end', () => {
+  assert.equal(readingOf('OOC', true), 'OOC');
+  assert.equal(readingOf('OOC', false), null);
+  assert.equal(readingOf('', true), null);
+});
+
+test('readers: the host is told the latest feed still read, per session; re-sent to mark new lines read', () => {
+  const told = [];
+  const r = readers((label, sid) => told.push([sid, label]));
+  r.set('s1', 'main', 'OOC');
+  assert.deepEqual(told, [['s1', 'OOC']]);
+  r.set('s1', 'main', 'OOC'); // a new line arrived while at the end: marks it read again
+  assert.deepEqual(told.at(-1), ['s1', 'OOC']);
+  assert.equal(told.length, 2);
+  r.set('s1', 'pop:Tells', 'Tells'); // a pop-out at the end of another feed
+  assert.equal(r.current('s1'), 'Tells');
+  r.set('s1', 'pop:Tells', null); // the pop-out scrolls up: back to what the main panel reads
+  assert.equal(r.current('s1'), 'OOC');
+  assert.deepEqual(told.at(-1), ['s1', 'OOC']);
+  r.set('s1', 'main', null); // the main panel scrolls up too: nothing
+  assert.deepEqual(told.at(-1), ['s1', null]);
+  const n = told.length;
+  r.set('s1', 'main', null); // still nothing: not repeated
+  assert.equal(told.length, n);
+  r.set('s1', 'main', 'OOC');
+  r.drop('s1', 'main'); // panel closed
+  assert.deepEqual(told.at(-1), ['s1', null]);
+  r.set('s2', 'main', 'X');
+  assert.deepEqual(told.at(-1), ['s2', 'X']);
+  assert.equal(r.current('s1'), '');
+  r.forget('s2');
+  assert.equal(r.current('s2'), '');
+  r.drop('s2', 'main'); // forgotten: nothing told
+  assert.deepEqual(told.at(-1), ['s2', 'X']);
+});
+
+/** A fake mu with sessions.each and feeds.watch; `push(sid, label, line)` notifies that session's watchers. */
 function fakeMu(sids) {
   const sessions = sids.map((id) => ({ id, worldId: 'w', worldName: 'W', state: 'connected' }));
-  const data = new Map(), watchers = new Map(), on = { switch: new Set(), line: new Set() };
+  const data = new Map(), watchers = new Map(), each = new Set();
   const get = (sid) => data.get(sid) ?? view({});
   const mu = {
     sessions: {
-      list: () => [...sessions],
-      on: (ev, fn) => { on[ev].add(fn); return () => on[ev].delete(fn); },
+      each(setup) {
+        const rec = { setup, cleanups: new Map() };
+        each.add(rec);
+        for (const s of sessions) { const d = setup(s); if (d) rec.cleanups.set(s.id, d); }
+        return () => { each.delete(rec); for (const d of rec.cleanups.values()) d(); };
+      },
     },
     feeds: {
       watch(fn, sid) {
@@ -115,20 +170,29 @@ function fakeMu(sids) {
     },
   };
   return {
-    mu, sessions, on,
+    mu,
     live: () => [...watchers.values()].reduce((n, s) => n + s.size, 0),
+    each: () => each.size,
     push(sid, label, l) {
       const v = get(sid); data.set(sid, view({ ...v.lines, [label]: [...(v.lines[label] ?? []), l] }));
-      for (const fn of watchers.get(sid) ?? []) fn(get(sid));
+      for (const fn of [...(watchers.get(sid) ?? [])]) fn(get(sid));
     },
     preload(sid, label, l) { data.set(sid, view({ [label]: [l] })); },
+    open(id) {
+      const s = { id, worldId: 'w', worldName: 'W', state: 'connected' }; sessions.push(s);
+      for (const rec of each) { const d = rec.setup(s); if (d) rec.cleanups.set(id, d); }
+    },
+    close(id) {
+      sessions.splice(sessions.findIndex((s) => s.id === id), 1);
+      for (const rec of each) { rec.cleanups.get(id)?.(); rec.cleanups.delete(id); }
+    },
   };
 }
 
-test('auto-add fires once per session on its first feed line', () => {
+test('onFirstLine fires once per session on its first feed line', () => {
   const f = fakeMu(['s1', 's2']);
   const hits = [];
-  const off = watchFirstLines(f.mu, (sid) => hits.push(sid));
+  const off = onFirstLine(f.mu, (sid) => hits.push(sid));
   assert.equal(f.live(), 2);
   f.push('s2', 'OOC', line(1, 'a'));
   f.push('s2', 'OOC', line(2, 'b'));
@@ -138,68 +202,32 @@ test('auto-add fires once per session on its first feed line', () => {
   assert.deepEqual(hits, ['s2', 's1']);
   assert.equal(f.live(), 0);
   off();
-  assert.equal(f.on.switch.size + f.on.line.size, 0);
+  assert.equal(f.each(), 0);
 });
 
-test('auto-add: a session that already has lines fires at once, without leaking the watch', () => {
+test('onFirstLine: a session that already has lines fires at once, without leaking the watch', () => {
   const f = fakeMu(['s1']);
   f.preload('s1', 'OOC', line(1, 'a'));
   const hits = [];
-  const off = watchFirstLines(f.mu, (sid) => hits.push(sid));
+  const off = onFirstLine(f.mu, (sid) => hits.push(sid));
   assert.deepEqual(hits, ['s1']);
   assert.equal(f.live(), 0);
   off();
 });
 
-test('auto-add picks up new sessions on switch and on their first line, and drops closed ones', () => {
+test('onFirstLine: sessions opening later are watched, closed ones released, a returning one fires again', () => {
   const f = fakeMu(['s1']);
   const hits = [];
-  const off = watchFirstLines(f.mu, (sid) => hits.push(sid));
-  f.sessions.push({ id: 's2', worldId: 'w', worldName: 'W', state: 'connected' });
-  for (const fn of f.on.switch) fn(f.sessions[1]);
+  const off = onFirstLine(f.mu, (sid) => hits.push(sid));
+  f.open('s2');
   assert.equal(f.live(), 2);
-  f.sessions.push({ id: 's3', worldId: 'w', worldName: 'W', state: 'connected' });
-  for (const fn of f.on.line) fn({}, { sid: 's3' });
-  assert.equal(f.live(), 3);
-  f.sessions.splice(0, 1); // s1 closed
-  for (const fn of f.on.switch) fn(f.sessions[0]);
-  assert.equal(f.live(), 2);
-  f.push('s3', 'X', line(1, 'a'));
-  assert.deepEqual(hits, ['s3']);
-  off();
-  assert.equal(f.live(), 0);
-  assert.equal(f.on.switch.size + f.on.line.size, 0);
-});
-
-test('auto-add: a session gone before its first line stops in the callback and never fires', () => {
-  const f = fakeMu(['s1', 's2']);
-  const hits = [];
-  const off = watchFirstLines(f.mu, (sid) => hits.push(sid));
-  assert.equal(f.live(), 2);
-  f.sessions.splice(0, 1); // s1 closed, no switch or sync yet
-  f.push('s1', 'OOC', line(1, 'late'));
-  assert.deepEqual(hits, [], 'no panel for a dead session');
-  assert.equal(f.live(), 1, 's1 stopped from its own callback');
-  f.push('s2', 'OOC', line(1, 'a'));
+  f.close('s1');
+  assert.equal(f.live(), 1, 'closed session released');
+  f.push('s2', 'X', line(1, 'a'));
   assert.deepEqual(hits, ['s2']);
-  off();
-});
-
-test('auto-add: a dead session at watch time is not kept, and sync forgets closed sessions', () => {
-  const f = fakeMu(['s1']);
-  const hits = [];
-  const off = watchFirstLines(f.mu, (sid) => hits.push(sid));
-  // A line from a session that is not (or no longer) in the list: the immediate callback ends the watch.
-  for (const fn of f.on.line) fn({}, { sid: 'ghost' });
-  assert.equal(f.live(), 1);
-  f.push('s1', 'OOC', line(1, 'a'));
-  assert.deepEqual(hits, ['s1']);
-  // s1 closes and the same id comes back (a reconnect reusing it): it is a new session and fires again.
-  f.sessions.splice(0, 1);
-  for (const fn of f.on.switch) fn(null);
-  f.sessions.push({ id: 's1', worldId: 'w', worldName: 'W', state: 'connected' });
-  for (const fn of f.on.switch) fn(f.sessions[0]);
-  assert.deepEqual(hits, ['s1', 's1'], 'done was cleared for the closed session');
+  f.close('s2'); f.open('s2');
+  f.push('s2', 'X', line(2, 'b'));
+  assert.deepEqual(hits, ['s2', 's2']);
   off();
   assert.equal(f.live(), 0);
 });

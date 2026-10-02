@@ -1,6 +1,6 @@
 {
   "name": "@runmu.sh/ext-feeds",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out and clear.",
   "keywords": [
     "feeds",
@@ -33,8 +33,8 @@
     "test": "node --experimental-strip-types --test \"tests/*.test.mjs\""
   },
   "devDependencies": {
-    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.7.1",
-    "@runmu.sh/dev": "^0.1.0",
+    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.12.0",
+    "@runmu.sh/dev": "^0.2.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vue": "^3.5.0"
@@ -44,7 +44,7 @@
   },
   "muclient": {
     "id": "feeds",
-    "api": "^1.7",
+    "api": "^1.12",
     "source": "src/index.ts",
     "displayName": "Feeds",
     "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out and clear.",
@@ -58,7 +58,8 @@
           "id": "feeds",
           "title": "Feeds",
           "defaultPosition": "right-bottom",
-          "order": 50
+          "order": 50,
+          "show": "always"
         },
         {
           "id": "feed",
