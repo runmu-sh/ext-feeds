@@ -1,12 +1,24 @@
 /**
- * The pure parts of the Feeds panel: copy, CSS, tab keys, timestamps, search, the latest pill, what the panel
- * tells the host it is reading, and the first-line watcher. No Vue and no DOM here, so tests/*.test.mjs import
- * this file directly.
+ * The pure parts of the Feeds panel: copy, CSS, tab keys, timestamps, search, the latest pill, which feed the
+ * panels are reading, and the first-line watcher. No Vue and no DOM here, so tests/*.test.mjs import this file
+ * directly.
  */
-import type { Dispose, FeedLineView, FeedsView, Mu } from '@muclient/sdk';
+import type { Dispose, FeedLineView, Mu } from '@muclient/sdk';
+
+/** A session's feeds as the panel draws them (src/store.ts keeps them). */
+export interface FeedsState {
+  /** The feeds to show, in order: the enabled rules' feeds for the session's world, then any other feed holding lines. */
+  labels: string[];
+  /** Lines per feed, oldest first, at most 500 each. */
+  lines: Record<string, FeedLineView[]>;
+  /** Lines per feed that arrived while no panel was reading that feed at its end. */
+  unread: Record<string, number>;
+}
 
 /** Visible copy. */
 export const COPY = {
+  /** The Rules tool's tooltip. */
+  rulesTip: 'Open Settings → Feeds to edit what goes where',
   search: 'Search', times: 'Times', rules: 'Rules', popOut: 'Pop out', clear: 'Clear', help: 'Help', addFeed: 'Add a feed',
   empty: 'Empty.', noMatches: 'No matches.',
   title: 'Feeds', feedTitle: 'Feed',
@@ -20,7 +32,7 @@ export const COPY = {
   /** The empty panel: what a feed is and how to get one. */
   introHead: 'No feeds yet',
   introText: 'A feed is a side channel of the terminal. A rule in Settings → Feeds watches the game\'s output for a word or a /regex/ and copies or moves each matching line into a feed of your choosing. Every feed gets a tab here.',
-  introSteps: ['Open Settings → Feeds (or press Add a feed).', 'Add a rule: what to match, and the feed it goes to.', 'Lines land here as the game sends them.'],
+  introSteps: ['Open Settings → Feeds, the ⇶ Feeds tile (or press Add a feed).', 'Add a rule: what to match, and the feed it goes to.', 'Lines land here as the game sends them.'],
   /** Under “Empty.” in a feed that has no lines yet. */
   emptyHint: (label: string) => `Lines your rules send to “${label}” will show up here.`,
   /** The help strip. */
@@ -29,7 +41,7 @@ export const COPY = {
     ['Search', 'filter this feed; Esc closes'],
     ['Times', 'show when each line arrived'],
     ['Pop out', 'this feed in its own panel (or double-click its tab)'],
-    ['Rules', 'edit what goes where (Settings → Feeds)'],
+    ['Rules', 'open Settings → Feeds, where the rules say what goes where'],
     ['Clear', 'empty this feed on this device'],
   ] as Array<[string, string]>,
   helpNote: 'Feeds are kept per session, up to 500 lines each. A badge counts lines you have not seen; keyboard: ← → Home End move between tabs, F6 reaches the lines.',
@@ -89,8 +101,8 @@ export const FEEDS_CSS = [
 /** `params.feed` of the popped-out `feed` panel, '' for the tabbed `feeds` panel. */
 export const soloOf = (params: Record<string, unknown> | undefined): string => (typeof params?.feed === 'string' ? params.feed : '');
 
-/** The tabs to show: the solo feed alone, else the host's ordered labels. */
-export const labelsOf = (view: FeedsView | null, solo: string): string[] => (solo ? [solo] : view ? [...view.labels] : []);
+/** The tabs to show: the solo feed alone, else the store's ordered labels. */
+export const labelsOf = (view: FeedsState | null, solo: string): string[] => (solo ? [solo] : view ? [...view.labels] : []);
 
 /** Keep the selection while its feed exists, else the first one ('' when none). */
 export const keepSelection = (labels: string[], sel: string): string => (labels.includes(sel) ? sel : labels[0] ?? '');
@@ -120,7 +132,7 @@ export function filterLines(lines: FeedLineView[], q: string): FeedLineView[] {
 }
 
 /** A tab's unread badge: none on the selected tab. */
-export const unreadOf = (view: FeedsView | null, label: string, sel: string): number => (label !== sel ? view?.unread[label] ?? 0 : 0);
+export const unreadOf = (view: FeedsState | null, label: string, sel: string): number => (label !== sel ? view?.unread[label] ?? 0 : 0);
 
 /** The tab's accessible name, with its unread count. */
 export const tabLabel = (label: string, unread: number): string => (unread ? `${label}, ${unread} unread` : label);
@@ -129,7 +141,7 @@ export const tabLabel = (label: string, unread: number): string => (unread ? `${
 export const nearEnd = (b: { scrollHeight: number; scrollTop: number; clientHeight: number }): boolean => b.scrollHeight - b.scrollTop - b.clientHeight < 24;
 
 /**
- * What the panel tells the host it is reading (`mu.feeds.viewing`): the selected feed while you are at its end,
+ * What a panel reports it is reading: the selected feed while you are at its end,
  * nothing while you are scrolled up. Lines arriving in a feed you have scrolled away from then count as unread, and
  * reaching the end again marks them read.
  */
@@ -155,16 +167,16 @@ export const pillOf = (t: Tail): null | { quiet: boolean; text: string } =>
   (t.atEnd ? null : t.fresh > 0 ? { quiet: false, text: COPY.latest(t.fresh) } : { quiet: true, text: '↓' });
 
 /**
- * The feeds a session's panels are reading. The host keeps one `viewing` label per session, but the tabbed panel and
+ * The feeds a session's panels are reading. The store keeps one `viewing` feed per session, but the tabbed panel and
  * any number of pop-outs can each be at the end of a different feed. Each panel reports its own reading
- * ({@link readingOf}) under its own key; the host is told the latest one that is still being read (which also marks
+ * ({@link readingOf}) under its own key; the store is told the latest one that is still being read (which also marks
  * it read), and nothing once no panel reads any. `drop` forgets a panel; `forget` a whole session.
  */
 export interface Readers {
   set(sid: string, key: string, label: string | null): void;
   drop(sid: string, key: string): void;
   forget(sid: string): void;
-  /** What the host was last told for `sid` ('' for nothing). */
+  /** What the store was last told for `sid` ('' for nothing). */
   current(sid: string): string;
 }
 export function readers(viewing: (label: string | null, sid: string) => void): Readers {
@@ -194,24 +206,24 @@ export function readers(viewing: (label: string | null, sid: string) => void): R
 }
 
 /** True when any feed holds a line. */
-export const hasLines = (view: FeedsView | null): boolean => !!view && Object.values(view.lines).some((ls) => ls.length > 0);
+export const hasLines = (view: FeedsState | null): boolean => !!view && Object.values(view.lines).some((ls) => ls.length > 0);
 
 /**
  * Call `onFirst(sid)` once per in-scope session, the first time one of its feeds holds a line (at once for a session
  * that already has lines). Built on `mu.sessions.each`: the host runs it for every session in scope and disposes a
  * session's watch when it leaves scope; a session that comes back is a new session and fires again.
  */
-export function onFirstLine(mu: Pick<Mu, 'feeds' | 'sessions'>, onFirst: (sid: string) => void): Dispose {
+export function onFirstLine(mu: Pick<Mu, 'sessions'>, feeds: { watch(sid: string, fn: (view: FeedsState) => void): Dispose }, onFirst: (sid: string) => void): Dispose {
   return mu.sessions.each((s) => {
     let done = false, off: Dispose | null = null;
     const stop = () => { const d = off; off = null; d?.(); };
     // watch() calls back at once with the feeds now, before it has returned its dispose.
-    const d = mu.feeds.watch((view) => {
+    const d = feeds.watch(s.id, (view) => {
       if (done || !hasLines(view)) return;
       done = true;
       onFirst(s.id);
       stop();
-    }, s.id);
+    });
     if (done) d(); else off = d;
     return stop;
   });

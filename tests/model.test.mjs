@@ -158,7 +158,7 @@ test('readers: the host is told the latest feed still read, per session; re-sent
   assert.deepEqual(told.at(-1), ['s2', 'X']);
 });
 
-/** A fake mu with sessions.each and feeds.watch; `push(sid, label, line)` notifies that session's watchers. */
+/** A fake mu with sessions.each and a feed store's watch; `push(sid, label, line)` notifies that session's watchers. */
 function fakeMu(sids) {
   const sessions = sids.map((id) => ({ id, worldId: 'w', worldName: 'W', state: 'connected' }));
   const data = new Map(), watchers = new Map(), each = new Set();
@@ -173,7 +173,7 @@ function fakeMu(sids) {
       },
     },
     feeds: {
-      watch(fn, sid) {
+      watch(sid, fn) {
         const set = watchers.get(sid) ?? new Set(); watchers.set(sid, set); set.add(fn);
         fn(get(sid));
         return () => set.delete(fn);
@@ -203,7 +203,7 @@ function fakeMu(sids) {
 test('onFirstLine fires once per session on its first feed line', () => {
   const f = fakeMu(['s1', 's2']);
   const hits = [];
-  const off = onFirstLine(f.mu, (sid) => hits.push(sid));
+  const off = onFirstLine(f.mu, f.mu.feeds, (sid) => hits.push(sid));
   assert.equal(f.live(), 2);
   f.push('s2', 'OOC', line(1, 'a'));
   f.push('s2', 'OOC', line(2, 'b'));
@@ -220,7 +220,7 @@ test('onFirstLine: a session that already has lines fires at once, without leaki
   const f = fakeMu(['s1']);
   f.preload('s1', 'OOC', line(1, 'a'));
   const hits = [];
-  const off = onFirstLine(f.mu, (sid) => hits.push(sid));
+  const off = onFirstLine(f.mu, f.mu.feeds, (sid) => hits.push(sid));
   assert.deepEqual(hits, ['s1']);
   assert.equal(f.live(), 0);
   off();
@@ -229,7 +229,7 @@ test('onFirstLine: a session that already has lines fires at once, without leaki
 test('onFirstLine: sessions opening later are watched, closed ones released, a returning one fires again', () => {
   const f = fakeMu(['s1']);
   const hits = [];
-  const off = onFirstLine(f.mu, (sid) => hits.push(sid));
+  const off = onFirstLine(f.mu, f.mu.feeds, (sid) => hits.push(sid));
   f.open('s2');
   assert.equal(f.live(), 2);
   f.close('s1');

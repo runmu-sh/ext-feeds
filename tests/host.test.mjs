@@ -1,34 +1,19 @@
-// The extension against the headless μClient host (@runmu.sh/dev/test): what it registers, the auto-add through
-// mu.panels.touch, viewing per session, and a clean unload.
-import { test } from 'node:test';
+// The extension against the headless μClient host (@runmu.sh/dev/test): what it registers (panels, its Settings
+// page, the line router), routing into its own store, the auto-add through mu.panels.touch, and a clean unload.
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHost } from '@runmu.sh/dev/test';
+import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
-const line = (id, text) => ({ id, ts: 0, text, spans: [{ text }] });
+// A DOM for the panel test, before anything loads vue (runtime-dom reads `document` once, at import).
+GlobalRegistrator.register();
+after(() => GlobalRegistrator.unregister());
 
-/** The test host has no feeds model: give it one (per session, watchers called at once and on every push). */
-function withFeeds(host) {
-  const data = new Map(), watchers = new Map();
-  const get = (sid) => data.get(sid) ?? { labels: [], lines: {}, unread: {} };
-  Object.assign(host.mu.feeds, {
-    get: (sid) => get(sid),
-    watch(fn, sid) { const set = watchers.get(sid) ?? watchers.set(sid, new Set()).get(sid); set.add(fn); fn(get(sid)); return () => set.delete(fn); },
-    viewing(label, sid) { host.calls.push({ path: 'feeds.viewing', args: [label, sid] }); },
-    clear(label, sid) { host.calls.push({ path: 'feeds.clear', args: [label, sid] }); },
-  });
-  return {
-    push(sid, label, l) {
-      const v = get(sid);
-      data.set(sid, { labels: [...new Set([...v.labels, label])], lines: { ...v.lines, [label]: [...(v.lines[label] ?? []), l] }, unread: v.unread });
-      for (const fn of [...(watchers.get(sid) ?? [])]) fn(get(sid));
-    },
-    watching: () => [...watchers.values()].reduce((n, s) => n + s.size, 0),
-  };
-}
+const rule = (id, pattern, target, more = {}) => ({ id, pattern, target, ...more });
+const touches = (host) => host.calls.filter((c) => c.path === 'panels.touch').map((c) => c.args);
 
 test('registers feeds (Views, order 50, show always) and feed (floating pop-out, not in Views)', async () => {
   const host = createHost();
-  withFeeds(host);
   await host.load('src/index.ts');
   const feeds = host.panels.get('feeds'), feed = host.panels.get('feed');
   assert.equal(feeds.title, 'Feeds');
@@ -45,44 +30,82 @@ test('registers feeds (Views, order 50, show always) and feed (floating pop-out,
   assert.deepEqual(host.live(), []);
 });
 
-test('the first feed line of each session touches the feeds panel once; unload releases every watch', async () => {
-  const host = createHost({ sessions: [{ id: 's1', worldId: 'w1' }, { id: 's2', worldId: 'w1' }] });
-  const f = withFeeds(host);
+test('defines its Settings page (tile, routes per world) and one edits router on it; never touches mu.feeds', async () => {
+  const host = createHost();
   await host.load('src/index.ts');
-  const touches = () => host.calls.filter((c) => c.path === 'panels.touch').map((c) => c.args);
-  assert.deepEqual(touches(), []);
-  assert.equal(f.watching(), 2);
-  f.push('s2', 'OOC', line(1, 'hi'));
-  f.push('s2', 'OOC', line(2, 'again'));
-  assert.deepEqual(touches(), [['feeds', 's2']]);
-  host.open({ id: 's3', worldId: 'w2' });
-  f.push('s3', 'Tells', line(1, 'psst'));
-  assert.deepEqual(touches(), [['feeds', 's2'], ['feeds', 's3']]);
-  assert.equal(host.calls.some((c) => c.path === 'panels.autoAdd'), false, 'no hand-rolled autoAdd');
-  assert.equal(f.watching(), 1, 'only s1 still waits');
+  assert.equal(host.settingsSchema.title, 'Feeds');
+  assert.deepEqual(host.settingsSchema.tile, { glyph: '⇶', order: 950, width: 'min(34rem, 94vw)' });
+  assert.deepEqual(host.settingsSchema.items, [{ key: 'routes', kind: 'json', scope: 'world', default: [], label: 'Feed routing' }]);
+  assert.equal(host.settingsSchema.items[0].migrateFrom, undefined, 'the edits router copies rules.feeds itself');
+  assert.deepEqual(host.routers.map((r) => [r.id, r.rules, r.edits]), [['feeds', 'routes', true]]);
+  assert.equal(host.calls.some((c) => c.path.startsWith('feeds.')), false);
   await host.unload();
-  assert.equal(f.watching(), 0);
+  assert.deepEqual(host.routers, []);
+  assert.deepEqual(host.live(), []);
+});
+
+test('a rule in `routes` sends a line into the feed and the panel shows it; a move rule reports moved', async () => {
+  const { createApp, nextTick } = await import('vue');
+  const host = createHost({ settings: { routes: [rule('r1', 'pages', 'Pages'), rule('r2', '/^\\[OOC\\]/', 'OOC', { move: true })] } });
+  await host.load('src/index.ts');
+  const el = document.createElement('div');
+  document.body.append(el);
+  const app = createApp(host.panels.get('feeds').mount.component, { sid: 's1', worldId: 'w1' });
+  app.mount(el);
+  await nextTick();
+  const tabs = () => [...el.querySelectorAll('[data-testid="feed-tab"] .fname')].map((t) => t.textContent);
+  assert.deepEqual(tabs(), ['Pages', 'OOC'], 'a tab per enabled rule');
+
+  const copy = host.route('Bob pages: hi there', { sid: 's1' });
+  assert.deepEqual(copy.delivered.map((d) => [d.router, d.target, d.move]), [['feeds', 'Pages', false]]);
+  assert.equal(copy.moved, false);
+  await nextTick();
+  assert.deepEqual([...el.querySelectorAll('[data-testid="feed-line"]')].map((l) => l.textContent), ['Bob pages: hi there']);
+  assert.deepEqual(touches(host), [['feeds', 's1']], 'first line auto-adds the panel');
+
+  const move = host.route('[OOC] Ann: hello', { sid: 's1' });
+  assert.deepEqual(move.delivered.map((d) => [d.target, d.move]), [['OOC', true]]);
+  assert.equal(move.moved, true);
+  await nextTick();
+  const ooc = [...el.querySelectorAll('[data-testid="feed-tab"]')].find((t) => t.textContent.startsWith('OOC'));
+  assert.match(ooc.getAttribute('aria-label'), /OOC, 1 unread/);
+  assert.equal(host.route('nothing here', { sid: 's1' }).delivered.length, 0);
+
+  app.unmount();
+  await host.unload();
   assert.deepEqual(host.live(), []);
   assert.deepEqual(host.errors, []);
 });
 
-test('a session that already holds lines when the extension activates is touched at once', async () => {
-  const host = createHost();
-  const f = withFeeds(host);
-  f.push('s1', 'OOC', line(1, 'before'));
+test('the first routed line of each session touches the feeds panel once', async () => {
+  const host = createHost({ sessions: [{ id: 's1', worldId: 'w1' }, { id: 's2', worldId: 'w1' }], settings: { routes: [rule('r', 'ooc', 'OOC')] } });
   await host.load('src/index.ts');
-  assert.deepEqual(host.calls.filter((c) => c.path === 'panels.touch').map((c) => c.args), [['feeds', 's1']]);
+  assert.deepEqual(touches(host), []);
+  host.route('ooc hi', { sid: 's2' });
+  host.route('ooc again', { sid: 's2' });
+  assert.deepEqual(touches(host), [['feeds', 's2']]);
+  host.open({ id: 's3', worldId: 'w2' });
+  host.route('ooc psst', { sid: 's3' });
+  assert.deepEqual(touches(host), [['feeds', 's2'], ['feeds', 's3']]);
+  assert.equal(host.calls.some((c) => c.path === 'panels.autoAdd'), false, 'no hand-rolled autoAdd');
   await host.unload();
+  assert.deepEqual(host.live(), []);
+  assert.deepEqual(host.errors, []);
 });
 
-test('manifest: SDK 1.12, the panels it registers, and only what it uses', async () => {
+test('manifest: SDK 1.14, the panels and settings page it registers, and only what it uses', async () => {
   const { readFileSync } = await import('node:fs');
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(pkg.muclient.api, '^1.12');
-  assert.equal(pkg.devDependencies['@muclient/sdk'], 'npm:@runmu.sh/sdk@^1.12.0');
+  assert.equal(pkg.muclient.api, '^1.14');
+  assert.equal(pkg.devDependencies['@muclient/sdk'], 'npm:@runmu.sh/sdk@^1.14.0');
   assert.deepEqual(pkg.muclient.contributes.panels.map((p) => p.id), ['feeds', 'feed']);
   assert.equal(pkg.muclient.contributes.panels[0].show, 'always');
-  // No GMCP, no line hooks, no sends: the core routes the lines; this only draws them.
+  // The tile shows before activation: the same page `mu.settings.define` registers.
+  const host = createHost();
+  await host.load('src/index.ts');
+  assert.deepEqual(pkg.muclient.contributes.settings, JSON.parse(JSON.stringify(host.settingsSchema)));
+  await host.unload();
+  assert.doesNotMatch(pkg.muclient.description, /Settings → Feeds/);
   assert.equal(pkg.muclient.contributes.gmcp, undefined);
   assert.deepEqual(pkg.muclient.capabilities, ['read-output']);
 });

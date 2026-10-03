@@ -6,6 +6,8 @@ import { computed, defineComponent, h, nextTick, onBeforeUnmount, ref, shallowRe
 
 // src/model.ts
 var COPY = {
+  /** The Rules tool's tooltip. */
+  rulesTip: "Open Settings \u2192 Feeds to edit what goes where",
   search: "Search",
   times: "Times",
   rules: "Rules",
@@ -27,7 +29,7 @@ var COPY = {
   /** The empty panel: what a feed is and how to get one. */
   introHead: "No feeds yet",
   introText: "A feed is a side channel of the terminal. A rule in Settings \u2192 Feeds watches the game's output for a word or a /regex/ and copies or moves each matching line into a feed of your choosing. Every feed gets a tab here.",
-  introSteps: ["Open Settings \u2192 Feeds (or press Add a feed).", "Add a rule: what to match, and the feed it goes to.", "Lines land here as the game sends them."],
+  introSteps: ["Open Settings \u2192 Feeds, the \u21F6 Feeds tile (or press Add a feed).", "Add a rule: what to match, and the feed it goes to.", "Lines land here as the game sends them."],
   /** Under “Empty.” in a feed that has no lines yet. */
   emptyHint: (label) => `Lines your rules send to \u201C${label}\u201D will show up here.`,
   /** The help strip. */
@@ -36,7 +38,7 @@ var COPY = {
     ["Search", "filter this feed; Esc closes"],
     ["Times", "show when each line arrived"],
     ["Pop out", "this feed in its own panel (or double-click its tab)"],
-    ["Rules", "edit what goes where (Settings \u2192 Feeds)"],
+    ["Rules", "open Settings \u2192 Feeds, where the rules say what goes where"],
     ["Clear", "empty this feed on this device"]
   ],
   helpNote: "Feeds are kept per session, up to 500 lines each. A badge counts lines you have not seen; keyboard: \u2190 \u2192 Home End move between tabs, F6 reaches the lines.",
@@ -160,7 +162,7 @@ function readers(viewing) {
   };
 }
 var hasLines = (view) => !!view && Object.values(view.lines).some((ls) => ls.length > 0);
-function onFirstLine(mu, onFirst) {
+function onFirstLine(mu, feeds, onFirst) {
   return mu.sessions.each((s) => {
     let done = false, off = null;
     const stop = () => {
@@ -168,12 +170,12 @@ function onFirstLine(mu, onFirst) {
       off = null;
       d2?.();
     };
-    const d = mu.feeds.watch((view) => {
+    const d = feeds.watch(s.id, (view) => {
       if (done || !hasLines(view)) return;
       done = true;
       onFirst(s.id);
       stop();
-    }, s.id);
+    });
     if (done) d();
     else off = d;
     return stop;
@@ -182,7 +184,7 @@ function onFirstLine(mu, onFirst) {
 
 // src/panel.ts
 var panelSeq = 0;
-function createPanel(mu, reading) {
+function createPanel(mu, store, reading) {
   const c = mu.ui.css;
   return defineComponent({
     name: "FeedsPanel",
@@ -198,9 +200,9 @@ function createPanel(mu, reading) {
         if (readSid) reading.drop(readSid, key);
         readSid = sid;
         view.value = null;
-        if (sid) off = mu.feeds.watch((v) => {
+        if (sid) off = store.watch(sid, (v) => {
           view.value = v;
-        }, sid);
+        });
       }, { immediate: true });
       const solo = computed(() => soloOf(props.params));
       const labels = computed(() => labelsOf(view.value, solo.value));
@@ -270,9 +272,9 @@ function createPanel(mu, reading) {
         const sid = props.sid, label = sel.value;
         if (!sid || !label) return;
         const n = view.value?.lines[label]?.length ?? 0;
-        if (await mu.ui.confirm({ title: COPY.confirmClear(label), body: COPY.confirmClearBody(label, n), confirm: COPY.clear, danger: true })) mu.feeds.clear(label, sid);
+        if (await mu.ui.confirm({ title: COPY.confirmClear(label), body: COPY.confirmClearBody(label, n), confirm: COPY.clear, danger: true })) store.clear(label, sid);
       };
-      const editRules = () => mu.commands.run("settings.open", "feeds");
+      const editRules = () => mu.settings.open();
       const popOut = (label = sel.value) => {
         if (!label || solo.value) return;
         mu.panels.open("feed", { feed: label, instance: label }, { title: COPY.popTitle(label), ...props.sid ? { sid: props.sid } : {} });
@@ -329,7 +331,7 @@ function createPanel(mu, reading) {
               times.value = !times.value;
             } }, times.value),
             !solo.value && cur ? tool(COPY.popOut, { title: "this feed in its own panel", "aria-label": `Open ${cur} in its own panel`, "data-testid": "feed-popout", onClick: () => popOut() }) : null,
-            tool(COPY.rules, { "aria-label": "Edit feed rules", title: "edit what goes where (Settings \u2192 Feeds)", onClick: editRules }),
+            tool(COPY.rules, { "aria-label": "Edit feed rules", title: COPY.rulesTip, onClick: editRules }),
             cur ? tool(COPY.clear, { title: "empty this feed", "aria-label": `Clear ${cur} feed`, "data-testid": "feed-clear", onClick: () => {
               void clear();
             } }) : null,
@@ -404,20 +406,381 @@ function createPanel(mu, reading) {
   });
 }
 
+// src/store.ts
+var FEED_CAP = 500;
+var ROUTES_KEY = "routes";
+function ruleTargets(rules) {
+  if (!Array.isArray(rules)) return [];
+  return rules.filter((r) => r && typeof r === "object" && r.enabled !== false).map((r) => typeof r.target === "string" ? r.target.trim() : "").filter(Boolean);
+}
+function createStore(mu) {
+  const sessions = /* @__PURE__ */ new Map();
+  const session = (sid) => {
+    let s = sessions.get(sid);
+    if (!s) sessions.set(sid, s = { lines: {}, unread: {}, viewing: "", fns: /* @__PURE__ */ new Set(), offRules: null });
+    return s;
+  };
+  const scope = (sid) => {
+    const w = sessions.get(sid)?.worldId;
+    return w ? { worldId: w } : { sid };
+  };
+  const labelsFor = (sid) => {
+    let rules = [];
+    try {
+      rules = mu.settings.get(ROUTES_KEY, scope(sid));
+    } catch {
+      rules = [];
+    }
+    const lines = sessions.get(sid)?.lines ?? {};
+    const withLines = Object.keys(lines).filter((l) => lines[l].length);
+    return [.../* @__PURE__ */ new Set([...ruleTargets(rules), ...withLines])];
+  };
+  const get = (sid) => {
+    const s = sessions.get(sid);
+    return {
+      labels: labelsFor(sid),
+      lines: Object.fromEntries(Object.entries(s?.lines ?? {}).map(([l, buf]) => [l, [...buf]])),
+      unread: { ...s?.unread ?? {} }
+    };
+  };
+  const emit = (sid) => {
+    const s = sessions.get(sid);
+    if (!s?.fns.size) return;
+    const state = get(sid);
+    for (const fn of [...s.fns]) fn(state);
+  };
+  const followRules = (sid) => {
+    const s = session(sid);
+    s.offRules?.();
+    s.offRules = mu.settings.watch(ROUTES_KEY, (_v, meta) => {
+      if (!meta?.replay) emit(sid);
+    }, scope(sid));
+  };
+  return {
+    deliver(target, line, ctx) {
+      const label = typeof target === "string" ? target.trim() : "";
+      if (!label || !ctx?.sid) return;
+      const s = session(ctx.sid);
+      if (ctx.worldId && ctx.worldId !== s.worldId) {
+        s.worldId = ctx.worldId;
+        if (s.fns.size) followRules(ctx.sid);
+      }
+      const buf = s.lines[label] ??= [];
+      buf.push(line);
+      if (buf.length > FEED_CAP) buf.splice(0, buf.length - FEED_CAP);
+      if (s.viewing !== label) s.unread[label] = (s.unread[label] ?? 0) + 1;
+      emit(ctx.sid);
+    },
+    watch(sid, fn) {
+      const s = session(sid);
+      s.fns.add(fn);
+      if (!s.offRules) followRules(sid);
+      fn(get(sid));
+      return () => {
+        if (!s.fns.delete(fn) || s.fns.size) return;
+        s.offRules?.();
+        s.offRules = null;
+      };
+    },
+    viewing(label, sid) {
+      const s = session(sid);
+      const l = typeof label === "string" ? label : "";
+      s.viewing = l;
+      if (l && s.unread[l]) {
+        s.unread[l] = 0;
+        emit(sid);
+      }
+    },
+    clear(label, sid) {
+      const s = session(sid);
+      s.lines[label] = [];
+      s.unread[label] = 0;
+      emit(sid);
+    },
+    forget(sid) {
+      const s = sessions.get(sid);
+      if (!s) return;
+      s.offRules?.();
+      sessions.delete(sid);
+    },
+    labelsFor,
+    get
+  };
+}
+
+// src/settingsPage.ts
+import { computed as computed2, defineComponent as defineComponent2, h as h2, nextTick as nextTick2, onBeforeUnmount as onBeforeUnmount2, ref as ref2, shallowRef as shallowRef2, watch as watch2 } from "vue";
+var PAGE = {
+  intro: "A feed is a side channel of the terminal. Each rule below watches every line the game sends; a matching line is copied into the named feed, or moved there so the terminal stays quiet. The Feeds panel shows one tab per feed.",
+  howTitle: "How to match",
+  howText: "Plain text matches anywhere in the line, ignoring case. Wrap a regular expression in slashes: /^\\w+ tells you/. Several rules may share one feed, and a line may land in several feeds.",
+  examplesTitle: "Examples",
+  examples: [
+    { pattern: "[vox]", target: "vox", move: false, why: "copy the public channel into its own tab" },
+    { pattern: "/tells you,/", target: "tells", move: true, why: "keep private messages out of the terminal" },
+    { pattern: "/^(You|.+) (hit|miss|parr)/", target: "combat", move: true, why: "put combat lines in their own tab" }
+  ],
+  useExample: "Use",
+  rulesTitle: "Rules",
+  rulesHint: "checked in order, top to bottom",
+  empty: "No rules yet. Add one, or start from an example.",
+  addRule: "Add rule",
+  enabled: "Enabled",
+  pattern: "Match",
+  patternPh: "text or /regex/",
+  target: "Feed",
+  targetPh: "feed name",
+  targetMissing: "Name the feed, or this rule does nothing.",
+  copy: "Copy",
+  move: "Move",
+  modeHint: (move2) => move2 ? "leaves the terminal" : "stays in the terminal too",
+  modeLabel: "What happens to a matching line",
+  up: "Move up",
+  down: "Move down",
+  remove: "Remove rule",
+  tryTitle: "Try it",
+  tryHint: "paste a line from the game to see where it goes",
+  tryPh: "a line of game output",
+  tryNone: "No rule matches this line. It stays in the terminal.",
+  tryHit: (targets, move2) => `Goes to ${targets.map((t) => `\u201C${t}\u201D`).join(" and ")}, and ${move2 ? "leaves the terminal" : "stays in the terminal too"}.`,
+  panelTitle: "The Feeds panel",
+  panelText: "It is listed in Views, and it opens by itself when a feed gets its first line. Lines are kept per session, 500 per feed.",
+  openPanel: "Open panel",
+  footer: "Feeds are per world and sync to your account. Highlights, gags and aliases are under Settings \u2192 Triggers.",
+  noWorld: "Pick a world to edit its feeds."
+};
+var PAGE_CSS = [
+  ".mu-feeds-page .fr-grp { display: flex; align-items: baseline; margin: 12px 0 5px; padding-bottom: 3px; font-size: .66rem; letter-spacing: .16em; text-transform: uppercase; color: var(--accent-bright); border-bottom: 1px solid var(--border); }",
+  ".mu-feeds-page .fr-hint { margin-left: .6ch; color: var(--fg-faint); letter-spacing: .04em; text-transform: none; }",
+  ".mu-feeds-page .fr-intro, .mu-feeds-page .fr-text { margin: 4px 0 2px; font-size: .78rem; line-height: 1.55; color: var(--fg); }",
+  ".mu-feeds-page .fr-intro { color: var(--fg-dim); }",
+  ".mu-feeds-page .fr-empty { margin: 2px 0 4px; font-size: .74rem; color: var(--fg-faint); }",
+  ".mu-feeds-page .fr-list { display: flex; flex-direction: column; gap: 6px; }",
+  ".mu-feeds-page .fr-card { display: flex; flex-direction: column; gap: 3px; padding: 6px 9px 5px; background: var(--bg); border: 1px solid var(--border); border-left: 2px solid var(--accent); transition: border-color .12s ease; }",
+  ".mu-feeds-page .fr-card:focus-within { border-color: var(--border-bright); border-left-color: var(--accent-bright); }",
+  ".mu-feeds-page .fr-card.off { border-left-color: var(--border-bright); }",
+  ".mu-feeds-page .fr-card.off .fr-field input { color: var(--fg-faint); }",
+  ".mu-feeds-page .fr-row { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }",
+  ".mu-feeds-page .fr-field { display: flex; flex-direction: column; gap: 1px; min-width: 0; }",
+  ".mu-feeds-page .fr-field > span { font-size: .58rem; }",
+  ".mu-feeds-page .fr-field input { width: 100%; font-size: .8rem; padding: 2px 2px 3px; min-height: 24px; }",
+  '.mu-feeds-page .fr-field input[aria-invalid="true"] { border-bottom-color: var(--alert); }',
+  ".mu-feeds-page .fr-grow { flex: 1 1 14ch; }",
+  ".mu-feeds-page .fr-feed { flex: 0 1 11ch; min-width: 9ch; }",
+  ".mu-feeds-page .fr-arrow { flex: 0 0 auto; align-self: flex-end; padding-bottom: 4px; color: var(--accent); }",
+  ".mu-feeds-page .fr-foot { justify-content: space-between; align-items: center; row-gap: 0; }",
+  ".mu-feeds-page .fr-mode { display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; }",
+  ".mu-feeds-page .fr-mode button, .mu-feeds-page .fr-on { font-size: .62rem; }",
+  ".mu-feeds-page .fr-modehint { margin-left: .6ch; font-size: .64rem; color: var(--fg-faint); white-space: nowrap; }",
+  ".mu-feeds-page .fr-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; flex: 0 0 auto; }",
+  ".mu-feeds-page .fr-err { margin: 0; padding: 1px 0 0 2px; font-size: .7rem; color: var(--alert); }",
+  ".mu-feeds-page .fr-add { margin-top: 8px; }",
+  ".mu-feeds-page .fr-examples { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }",
+  ".mu-feeds-page .fr-ex { display: flex; align-items: center; gap: .8ch; flex-wrap: wrap; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: .74rem; }",
+  ".mu-feeds-page .fr-ex:last-child { border-bottom: 0; }",
+  ".mu-feeds-page .fr-ex-pat { font-family: inherit; color: var(--fg); padding: 0 .4ch; background: var(--bg-deep); }",
+  ".mu-feeds-page .fr-ex-feed { color: var(--accent-bright); font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; }",
+  ".mu-feeds-page .fr-ex-why { flex: 1 1 12ch; color: var(--fg-faint); font-size: .7rem; }",
+  ".mu-feeds-page .fr-ex-use { margin-left: auto; }",
+  ".mu-feeds-page .fr-try { width: 100%; font-size: .82rem; margin-top: 2px; }",
+  ".mu-feeds-page .fr-trial { margin: 6px 0 0; padding-left: 1ch; border-left: 2px solid var(--border-bright); font-size: .74rem; color: var(--fg-dim); }",
+  ".mu-feeds-page .fr-trial.hit { border-left-color: var(--ok); color: var(--fg); }",
+  ".mu-feeds-page .fr-foot-note { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); font-size: .74rem; color: var(--fg-dim); }"
+].join("\n");
+var seq = 0;
+var newId = () => `f${Date.now().toString(36)}${(seq++).toString(36)}`;
+function move(list, i, d) {
+  const j = i + d;
+  if (i < 0 || j < 0 || i >= list.length || j >= list.length) return;
+  [list[i], list[j]] = [list[j], list[i]];
+}
+function readRules(v) {
+  if (!Array.isArray(v)) return [];
+  return v.filter((r) => r && typeof r === "object").map((r) => ({
+    ...r,
+    id: typeof r.id === "string" && r.id ? r.id : newId(),
+    pattern: typeof r.pattern === "string" ? r.pattern : "",
+    target: typeof r.target === "string" ? r.target : typeof r.label === "string" ? r.label : ""
+  }));
+}
+function createSettingsPage(mu) {
+  const c = mu.ui.css;
+  return defineComponent2({
+    name: "FeedsSettingsPage",
+    props: { sid: { type: String, default: null }, worldId: { type: String, default: null }, params: { type: Object, default: () => ({}) } },
+    setup(props) {
+      const rules = shallowRef2([]);
+      let off = null;
+      watch2(() => props.worldId, (wid) => {
+        off?.();
+        off = null;
+        rules.value = [];
+        if (wid) off = mu.settings.watch(ROUTES_KEY, (v) => {
+          rules.value = readRules(v);
+        }, { worldId: wid });
+      }, { immediate: true });
+      onBeforeUnmount2(() => {
+        off?.();
+        off = null;
+      });
+      const edit = (fn) => {
+        const wid = props.worldId;
+        if (!wid) return;
+        const next = readRules(mu.settings.get(ROUTES_KEY, { worldId: wid })).map((r) => ({ ...r }));
+        fn(next);
+        mu.settings.set(ROUTES_KEY, next, wid);
+        rules.value = next;
+      };
+      const set = (i, p) => edit((l) => {
+        if (l[i]) Object.assign(l[i], p);
+      });
+      const val = (e) => e.target.value;
+      const add = (seed) => edit((l) => {
+        l.push({ id: newId(), pattern: seed?.pattern ?? "", target: seed?.target ?? "", move: seed?.move ?? false });
+      });
+      const hasExample = (ex) => rules.value.some((r) => r.pattern === ex.pattern && r.target === ex.target);
+      const targets = computed2(() => [...new Set(rules.value.map((r) => r.target.trim()).filter(Boolean))]);
+      const root = ref2(null);
+      const addAndFocus = () => {
+        add();
+        nextTick2(() => root.value?.querySelector(".fr-card:last-child input.fr-match")?.focus());
+      };
+      const sample = ref2("");
+      const trial = computed2(() => {
+        const text = sample.value.trim();
+        if (!text || !props.worldId) return null;
+        const r = mu.lines.testRoutes(text, rules.value);
+        return r.targets.length ? { text: PAGE.tryHit(r.targets, r.move), hit: true } : { text: PAGE.tryNone, hit: false };
+      });
+      const openPanel = () => mu.panels.open("feeds", void 0, props.sid ? { sid: props.sid } : void 0);
+      const grp = (title, hint) => h2("div", { class: "fr-grp" }, [title, hint ? h2("span", { class: "fr-hint" }, hint) : null]);
+      const card = (r, i, n) => {
+        const err = mu.lines.patternError(r.pattern);
+        const noTarget = !r.target.trim() && !!r.pattern.trim();
+        const on = r.enabled !== false;
+        return h2("div", { key: r.id, class: ["fr-card", { off: !on }], role: "group", "aria-label": `Rule ${i + 1}`, "data-rule": "route" }, [
+          h2("div", { class: "fr-row" }, [
+            h2("label", { class: "fr-field fr-grow" }, [
+              h2("span", { class: c.label }, PAGE.pattern),
+              h2("input", {
+                class: [c.field, "fr-match"],
+                placeholder: PAGE.patternPh,
+                value: r.pattern,
+                "aria-label": `Rule ${i + 1} pattern`,
+                "aria-invalid": !!err,
+                spellcheck: false,
+                onInput: (e) => set(i, { pattern: val(e) })
+              })
+            ]),
+            h2("span", { class: "fr-arrow", "aria-hidden": "true" }, "\u2192"),
+            h2("label", { class: "fr-field fr-feed" }, [
+              h2("span", { class: c.label }, PAGE.target),
+              h2("input", {
+                class: [c.field, "fr-target"],
+                placeholder: PAGE.targetPh,
+                list: "mu-feeds-names",
+                value: r.target,
+                "aria-label": `Rule ${i + 1} feed`,
+                "aria-invalid": noTarget,
+                spellcheck: false,
+                onInput: (e) => set(i, { target: val(e) })
+              })
+            ])
+          ]),
+          h2("div", { class: "fr-row fr-foot" }, [
+            h2("div", { class: "fr-mode", role: "radiogroup", "aria-label": PAGE.modeLabel }, [
+              h2("button", { type: "button", role: "radio", class: c.toggle, "aria-checked": !r.move, "data-mode": "copy", onClick: () => set(i, { move: false }) }, PAGE.copy),
+              h2("button", { type: "button", role: "radio", class: c.toggle, "aria-checked": !!r.move, "data-mode": "move", onClick: () => set(i, { move: true }) }, PAGE.move),
+              h2("span", { class: "fr-modehint" }, PAGE.modeHint(!!r.move))
+            ]),
+            h2("div", { class: "fr-tools" }, [
+              h2("button", { type: "button", class: [c.toggle, "fr-on"], role: "switch", "aria-checked": on, "aria-label": `Rule ${i + 1} enabled`, onClick: () => set(i, { enabled: !on }) }, PAGE.enabled),
+              h2("button", { type: "button", class: [c.cmd, c.sq], disabled: i === 0, "aria-label": `Move rule ${i + 1} up`, title: PAGE.up, onClick: () => edit((l) => move(l, i, -1)) }, "\u2191"),
+              h2("button", { type: "button", class: [c.cmd, c.sq], disabled: i === n - 1, "aria-label": `Move rule ${i + 1} down`, title: PAGE.down, onClick: () => edit((l) => move(l, i, 1)) }, "\u2193"),
+              h2("button", { type: "button", class: [c.cmd, c.sq, c.warn], "aria-label": `Remove rule ${i + 1}`, title: PAGE.remove, onClick: () => edit((l) => {
+                l.splice(i, 1);
+              }) }, "\xD7")
+            ])
+          ]),
+          err ? h2("p", { class: "fr-err", "data-testid": "feeds-rule-error" }, err) : noTarget ? h2("p", { class: "fr-err", "data-testid": "feeds-rule-error" }, PAGE.targetMissing) : null
+        ]);
+      };
+      return () => {
+        if (!props.worldId) return h2("div", { class: "mu-feeds-page", "data-testid": "feeds-page" }, [h2("p", { class: c.empty }, PAGE.noWorld)]);
+        const rs = rules.value, t = trial.value;
+        return h2("div", { ref: root, class: "mu-feeds-page", "data-testid": "feeds-page" }, [
+          h2("p", { class: "fr-intro" }, PAGE.intro),
+          grp(PAGE.rulesTitle, PAGE.rulesHint),
+          rs.length ? null : h2("p", { class: "fr-empty", "data-testid": "feeds-empty" }, PAGE.empty),
+          h2("div", { class: "fr-list" }, rs.map((r, i) => card(r, i, rs.length))),
+          h2("datalist", { id: "mu-feeds-names" }, targets.value.map((l) => h2("option", { key: l, value: l }))),
+          h2("button", { type: "button", class: [c.cmd, c.primary, "fr-add"], "data-testid": "feeds-add-rule", onClick: addAndFocus }, PAGE.addRule),
+          grp(PAGE.examplesTitle),
+          h2("ul", { class: "fr-examples" }, PAGE.examples.map((ex) => h2("li", { key: ex.pattern, class: "fr-ex" }, [
+            h2("code", { class: "fr-ex-pat" }, ex.pattern),
+            h2("span", { class: "fr-arrow", "aria-hidden": "true" }, "\u2192"),
+            h2("span", { class: "fr-ex-feed" }, ex.target),
+            h2("span", { class: "fr-ex-why" }, `${ex.why} (${(ex.move ? PAGE.move : PAGE.copy).toLowerCase()})`),
+            h2("button", {
+              type: "button",
+              class: [c.cmd, "fr-ex-use"],
+              disabled: hasExample(ex),
+              "aria-label": `Use example: ${ex.pattern} to ${ex.target}`,
+              "data-testid": "feeds-example",
+              onClick: () => add(ex)
+            }, PAGE.useExample)
+          ]))),
+          grp(PAGE.howTitle),
+          h2("p", { class: "fr-text" }, PAGE.howText),
+          grp(PAGE.tryTitle, PAGE.tryHint),
+          h2("input", {
+            class: [c.field, "fr-try"],
+            placeholder: PAGE.tryPh,
+            "aria-label": PAGE.tryTitle,
+            spellcheck: false,
+            value: sample.value,
+            "data-testid": "feeds-try",
+            onInput: (e) => {
+              sample.value = val(e);
+            }
+          }),
+          t ? h2("p", { class: ["fr-trial", { hit: t.hit }], "aria-live": "polite", "data-testid": "feeds-trial" }, t.text) : null,
+          grp(PAGE.panelTitle),
+          h2("p", { class: "fr-text" }, [PAGE.panelText, " ", h2("button", { type: "button", class: c.cmd, "data-testid": "feeds-open-panel", onClick: openPanel }, PAGE.openPanel)]),
+          h2("p", { class: "fr-foot-note" }, PAGE.footer)
+        ]);
+      };
+    }
+  });
+}
+
 // src/index.ts
+var SETTINGS = {
+  title: "Feeds",
+  tile: { glyph: "\u21F6", order: 950, width: "min(34rem, 94vw)" },
+  items: [{ key: ROUTES_KEY, kind: "json", scope: "world", default: [], label: "Feed routing" }]
+};
 var index_default = defineExtension({
   activate(ctx) {
     const mu = ctx.mu;
     const subs = ctx.subscriptions;
+    const store = createStore(mu);
     subs.push(mu.ui.style(FEEDS_CSS));
-    const reading = readers((label, sid) => mu.feeds.viewing(label, sid));
-    subs.push(mu.sessions.each((s) => () => reading.forget(s.id)));
-    const mount = mu.panels.vue(createPanel(mu, reading));
+    subs.push(mu.ui.style(PAGE_CSS));
+    subs.push(mu.settings.define({ ...SETTINGS, component: mu.panels.vue(createSettingsPage(mu)) }));
+    subs.push(mu.lines.route({ id: "feeds", rules: ROUTES_KEY, edits: true, deliver: (t, line, c) => store.deliver(t, line, c) }));
+    const reading = readers((label, sid) => store.viewing(label, sid));
+    subs.push(mu.sessions.each((s) => () => {
+      reading.forget(s.id);
+      store.forget(s.id);
+    }));
+    const mount = mu.panels.vue(createPanel(mu, store, reading));
     subs.push(mu.panels.register({ id: "feeds", title: COPY.title, mount, perSession: true, defaultPosition: "right-bottom", order: 50, show: "always" }));
     subs.push(mu.panels.register({ id: "feed", title: COPY.feedTitle, mount, perSession: true, singleton: false, defaultPosition: "float", inViewsMenu: false }));
-    subs.push(onFirstLine(mu, (sid) => mu.panels.touch("feeds", sid)));
+    subs.push(onFirstLine(mu, store, (sid) => mu.panels.touch("feeds", sid)));
   }
 });
 export {
+  SETTINGS,
   index_default as default
 };

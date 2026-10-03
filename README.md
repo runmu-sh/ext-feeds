@@ -1,13 +1,13 @@
 # Feeds (`@runmu.sh/ext-feeds`, id `feeds`)
 
-The Feeds panel of [μClient](https://runmu.sh) (R-FEEDS): the lines your routing rules copy or move out of the terminal, one tab per feed.
+The Feeds panel of [μClient](https://runmu.sh) (R-FEEDS) and its routing rules: the lines your rules copy or move out of the terminal, one tab per feed, and the Settings → Feeds page where you write the rules.
 
 First-party, on the [marketplace](https://runmu.sh/marketplace/x/feeds). Install it from **☰ → Extensions → Discover** and enable it per world in **Extensions → Installed**.
 
-Until 1.0.0 the panel was part of the client core. The core still routes the lines (Settings → Feeds, a rule stage) and keeps up to 500 lines per feed per session; this extension only draws them.
+Until 1.0.0 the panel was part of the client core. Since 2.0.0 (μClient SDK 1.14) the extension also owns the routing rules, the Settings → Feeds page and the line buffers (up to 500 lines per feed per session). Rules you made in the client's old Settings → Feeds are copied into the extension once, the first time it loads.
 
 ## Getting started
-1. Open **Settings → Feeds** (☰ → Settings, or the **Rules** button in the panel). The page explains feeds and offers three one-click examples.
+1. Open **Settings → Feeds** (☰ → Settings, the ⇶ Feeds tile, or the **Rules** button in the panel). The page explains feeds and offers three one-click examples.
 2. Add a rule: **Match** is plain text (anywhere in the line, any case) or a `/regex/` with optional `imsu` flags; **Feed** is the tab the line goes to. Choose **Copy** (the line stays in the terminal too) or **Move** (the line leaves the terminal).
 3. Paste a line of game output into **Try it** to see which feed it would land in.
 4. Lines now land in the Feeds panel as the game sends them. The panel opens itself the first time a session gets one.
@@ -23,7 +23,7 @@ Examples:
 Rules are per world and sync to your account. Feeds hold up to 500 lines each, per session, on this device.
 
 ## Where the lines come from
-No GMCP. Feeds are filled by the player's rules in **Settings → Feeds** (a pattern, a feed label, and whether the line stays in the terminal). The panel reads them through `mu.feeds` (SDK 1.7+): the labels in order (the enabled rules' labels, then any other feed holding lines), the lines with their spans, and unread counts.
+No GMCP. Feeds are filled by the player's rules in **Settings → Feeds**, stored per world in the extension's `routes` setting (`RouteRule[]`: `pattern`, `target` feed, `move`, `enabled`). A line router (`mu.lines.route`, `edits: true`) delivers each matching line to the extension's own per-session store (`src/store.ts`); `edits: true` also lets triggers and other extensions copy or move a line into a feed (`LineEdit.copyTo/moveTo`). The tabs are the enabled rules' feeds in rule order, then any other feed holding lines.
 
 ## What it shows
 - **`feeds`** (Views → Feeds, right bottom, order 50): a tab per feed with an unread badge (lines that arrived while you looked elsewhere). Arrow keys move between tabs (they wrap), Home and End go to the first and last. Hovering a tab shows its line count; double-clicking it pops the feed out.
@@ -36,10 +36,14 @@ No GMCP. Feeds are filled by the player's rules in **Settings → Feeds** (a pat
 The first line a session's feeds receive adds the `feeds` panel to that session's workspace if it is not open (`mu.panels.touch`; once per world on this device, so a panel you closed stays closed).
 
 ## Settings
-**Show panel** (Settings → Extensions → Feeds, added by the host for `show`): always listed, only once a feed has lines, or never. The feeds themselves are configured in **Settings → Feeds** (core).
+**Settings → Feeds** (the ⇶ tile on the Settings hub) is the extension's page (`src/settingsPage.ts`), for the active world:
+- the rules as cards: **Match** (text or `/regex/`; a bad pattern shows the error under it), **Feed**, **Copy** or **Move**, **Enabled**, ↑ ↓ to reorder (rules are checked top to bottom) and × to delete; **Add rule** adds an empty one;
+- three examples with **Use**, a note on how matching works, **Try it** (paste a line, see which feeds it goes to and whether it leaves the terminal) and **Open panel**.
+
+**Show panel** (added by the host for `show`): always listed, only once a feed has lines, or never.
 
 ## SDK
-SDK 1.12. Uses `mu.feeds.watch/viewing/clear`, `mu.panels.register` (`show: 'always'`) `/open/touch/vue`, `mu.sessions.each`, `mu.ui.confirm`, `mu.commands.run('settings.open', 'feeds')`, `mu.ui.style` (rules scoped under `.ext-panel[data-ext="feeds"]`) and the `mu.ui.css` primitives. Capability `read-output` (it shows game text). It exports no API. `tests/model.test.mjs` covers the pure helpers in `src/model.ts`; `tests/host.test.mjs` runs the extension in the headless host from `@runmu.sh/dev/test`.
+SDK 1.14. Uses `mu.settings.define` (a `routes` json item per world, a hub `tile` and the page `component`) `/get/set/watch/open`, `mu.lines.route/testRoutes/patternError`, `mu.panels.register` (`show: 'always'`) `/open/touch/vue`, `mu.sessions.each`, `mu.ui.confirm`, `mu.ui.style` (rules scoped under `.ext-panel[data-ext="feeds"]`) and the `mu.ui.css` primitives. Capability `read-output` (it shows game text). It exports no API. `tests/model.test.mjs` covers the pure helpers in `src/model.ts`; `tests/store.test.mjs` the line store; `tests/host.test.mjs` runs the extension in the headless host from `@runmu.sh/dev/test`, and `tests/page.test.mjs` drives the settings page there (happy-dom).
 
 ## Develop
 Made with `npm create @runmu.sh/extension` ([the quickstart](https://runmu.sh/docs/extensions/quickstart)).

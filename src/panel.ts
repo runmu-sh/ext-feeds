@@ -5,22 +5,23 @@
  * that has no lines yet. With `params.feed` (the `feed` panel) it shows that one feed only.
  */
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, ref, shallowRef, watch, type VNode } from 'vue';
-import type { Dispose, FeedLineView, FeedsView, Mu } from '@muclient/sdk';
+import type { Dispose, FeedLineView, Mu } from '@muclient/sdk';
 import {
   COPY, filterLines, hhmmss, keepSelection, labelsOf, nearEnd, newTail, pillOf, readingOf, soloOf, stepTail, tabLabel,
-  tabTarget, unreadOf, type Readers, type Tail,
+  tabTarget, unreadOf, type FeedsState, type Readers, type Tail,
 } from './model';
+import type { FeedStore } from './store';
 
 let panelSeq = 0;
 
-export function createPanel(mu: Mu, reading: Readers) {
+export function createPanel(mu: Mu, store: Pick<FeedStore, 'watch' | 'clear'>, reading: Readers) {
   const c = mu.ui.css;
   return defineComponent({
     name: 'FeedsPanel',
     props: { sid: { type: String, default: null }, worldId: { type: String, default: null }, params: { type: Object, default: () => ({}) } },
     setup(props) {
       const key = `p${++panelSeq}`;
-      const view = shallowRef<FeedsView | null>(null);
+      const view = shallowRef<FeedsState | null>(null);
       let off: Dispose | null = null;
       let readSid: string | null = null;
       watch(() => props.sid, (sid) => {
@@ -29,7 +30,7 @@ export function createPanel(mu: Mu, reading: Readers) {
         readSid = sid;
         view.value = null;
         // watch calls back at once with the feeds now: no separate get.
-        if (sid) off = mu.feeds.watch((v) => { view.value = v; }, sid);
+        if (sid) off = store.watch(sid, (v) => { view.value = v; });
       }, { immediate: true });
 
       const solo = computed(() => soloOf(props.params as Record<string, unknown>));
@@ -45,7 +46,7 @@ export function createPanel(mu: Mu, reading: Readers) {
       const search = ref<HTMLInputElement | null>(null);
       const tail = ref<Tail>(newTail());
       const scrollEnd = () => nextTick(() => { if (box.value) box.value.scrollTop = box.value.scrollHeight; });
-      /** Tell the host what this panel reads: the selected feed while at its end (that marks it read), else nothing. */
+      /** Tell the store what this panel reads: the selected feed while at its end (that marks it read), else nothing. */
       const report = () => { if (props.sid) reading.set(props.sid, key, readingOf(sel.value, tail.value.atEnd)); };
       watch([sel, shown], () => {
         tail.value = stepTail(tail.value, sel.value, shown.value);
@@ -89,16 +90,16 @@ export function createPanel(mu: Mu, reading: Readers) {
         const sid = props.sid, label = sel.value;
         if (!sid || !label) return;
         const n = view.value?.lines[label]?.length ?? 0;
-        if (await mu.ui.confirm({ title: COPY.confirmClear(label), body: COPY.confirmClearBody(label, n), confirm: COPY.clear, danger: true })) mu.feeds.clear(label, sid);
+        if (await mu.ui.confirm({ title: COPY.confirmClear(label), body: COPY.confirmClearBody(label, n), confirm: COPY.clear, danger: true })) store.clear(label, sid);
       };
-      /** Rules and "Add a feed" open Settings → Feeds. */
-      const editRules = () => mu.commands.run('settings.open', 'feeds');
+      /** Rules and "Add a feed" open this extension's Settings page. */
+      const editRules = () => mu.settings.open();
       const popOut = (label = sel.value) => {
         if (!label || solo.value) return;
         mu.panels.open('feed', { feed: label, instance: label }, { title: COPY.popTitle(label), ...(props.sid ? { sid: props.sid } : {}) });
       };
 
-      // Stop reading here (the host also resets its own state on dispose). Another panel still reading keeps it.
+      // Stop reading here. Another panel still reading keeps it.
       onBeforeUnmount(() => {
         ro?.disconnect();
         off?.(); off = null;
@@ -141,7 +142,7 @@ export function createPanel(mu: Mu, reading: Readers) {
             tool(COPY.search, { 'aria-pressed': searching.value, 'aria-label': 'Search this feed', title: 'search', onClick: toggleSearch }, searching.value),
             tool(COPY.times, { 'aria-pressed': times.value, 'aria-label': 'Timestamps', title: 'timestamps', onClick: () => { times.value = !times.value; } }, times.value),
             !solo.value && cur ? tool(COPY.popOut, { title: 'this feed in its own panel', 'aria-label': `Open ${cur} in its own panel`, 'data-testid': 'feed-popout', onClick: () => popOut() }) : null,
-            tool(COPY.rules, { 'aria-label': 'Edit feed rules', title: 'edit what goes where (Settings → Feeds)', onClick: editRules }),
+            tool(COPY.rules, { 'aria-label': 'Edit feed rules', title: COPY.rulesTip, onClick: editRules }),
             cur ? tool(COPY.clear, { title: 'empty this feed', 'aria-label': `Clear ${cur} feed`, 'data-testid': 'feed-clear', onClick: () => { void clear(); } }) : null,
             tool(COPY.help, { 'aria-pressed': helping.value, 'aria-label': COPY.helpTitle, title: 'what the buttons do', 'data-testid': 'feed-help', onClick: () => { helping.value = !helping.value; } }, helping.value),
           ]),

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.0
+
+Breaking: needs μClient SDK 1.14 (`api ^1.14`). The client core no longer routes lines into feeds, keeps feed buffers or has its own Feeds page; this extension now does all three.
+
+- Routing rules live in the extension: a per-world `routes` setting (`RouteRule[]`: pattern, target feed, copy or move, enabled), read by a line router (`mu.lines.route`, `edits: true`, so triggers and other extensions can copy or move lines into a feed too).
+- **Settings → Feeds** (the ⇶ tile on the Settings hub) is the extension's page: the rule editor the core used to have, with Match → Feed cards, Copy or Move, Enabled, ↑ ↓ ×, **Add rule**, three one-click examples, a pattern error under a bad `/regex/`, **Try it** and **Open panel**.
+- Existing rules are copied once from the client's `rules.feeds` into `routes` the first time the extension loads (the host does the copy; a rule's `label` becomes its `target`).
+- The lines are kept by the extension, per session, up to 500 per feed. It no longer reads `mu.feeds`.
+- The panel's Rules tooltip, help strip and empty-panel steps point at Settings → Feeds by its tile.
+
 ## 1.2.0
 
 - The empty panel explains what a feed is and the three steps to one, above **Add a feed**, instead of a lone button.

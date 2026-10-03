@@ -1,7 +1,7 @@
 {
   "name": "@runmu.sh/ext-feeds",
-  "version": "1.2.0",
-  "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out, clear and built-in help.",
+  "version": "2.0.0",
+  "description": "The Feeds panel and its routing rules: a tab per feed your rules fill (its own Settings page, per world), with unread badges, search, timestamps, pop-out, clear and built-in help.",
   "keywords": [
     "feeds",
     "rules",
@@ -33,8 +33,9 @@
     "test": "node --experimental-strip-types --test \"tests/*.test.mjs\""
   },
   "devDependencies": {
-    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.12.0",
-    "@runmu.sh/dev": "^0.2.0",
+    "@happy-dom/global-registrator": "^20.14.5",
+    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.14.0",
+    "@runmu.sh/dev": "^0.3.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vue": "^3.5.0"
@@ -44,10 +45,10 @@
   },
   "muclient": {
     "id": "feeds",
-    "api": "^1.12",
+    "api": "^1.14",
     "source": "src/index.ts",
     "displayName": "Feeds",
-    "description": "The Feeds panel: a tab per feed your routing rules fill (Settings → Feeds), with unread badges, search, timestamps, pop-out, clear and built-in help.",
+    "description": "The Feeds panel and its routing rules: a tab per feed your rules fill (its own Settings page, per world), with unread badges, search, timestamps, pop-out, clear and built-in help.",
     "categories": [
       "interface",
       "communication"
@@ -67,7 +68,24 @@
           "defaultPosition": "float",
           "inViewsMenu": false
         }
-      ]
+      ],
+      "settings": {
+        "title": "Feeds",
+        "tile": {
+          "glyph": "⇶",
+          "order": 950,
+          "width": "min(34rem, 94vw)"
+        },
+        "items": [
+          {
+            "key": "routes",
+            "kind": "json",
+            "scope": "world",
+            "default": [],
+            "label": "Feed routing"
+          }
+        ]
+      }
     },
     "capabilities": [
       "read-output"
