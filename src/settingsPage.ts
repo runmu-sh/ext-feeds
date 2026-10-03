@@ -5,6 +5,12 @@
  * button that opens the Feeds panel. The rules are this extension's `routes` setting for the page's world
  * (`ctx.worldId`); matching and pattern errors come from the host (`mu.lines.testRoutes`, `mu.lines.patternError`),
  * so the page agrees with the router.
+ *
+ * Each rule has an explicit match mode, Text or Regex (never guessed from what was typed). The host's SDK 1.14 matcher
+ * only knows one string, where `/re/flags` is a regex and anything else text, so the page keeps what the player typed
+ * in `match` and their choice in `mode`, and writes `pattern` from them ({@link hostPattern}): Text is escaped into a
+ * case-insensitive regex, Regex is wrapped in slashes. A rule stored without `mode` (2.0.0, or copied from the core)
+ * is read by the meaning it had there ({@link readRules}).
  */
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import type { Dispose, Mu, RouteRule } from '@muclient/sdk';
@@ -14,13 +20,13 @@ import { ROUTES_KEY } from './store';
 export const PAGE = {
   intro: 'A feed is a side channel of the terminal. Each rule below watches every line the game sends; a matching line is copied into the named feed, or moved there so the terminal stays quiet. The Feeds panel shows one tab per feed.',
   howTitle: 'How to match',
-  howText: 'Plain text matches anywhere in the line, ignoring case. Wrap a regular expression in slashes: /^\\w+ tells you/. Several rules may share one feed, and a line may land in several feeds.',
+  howText: 'Each rule matches as Text or as a Regex. Text matches anywhere in the line, ignoring case, exactly as typed: [vox] means the five characters [vox]. Regex reads the match as a regular expression, ignoring case: ^\\w+ tells you, or .+ for every line. Several rules may share one feed, and a line may land in several feeds.',
   examplesTitle: 'Examples',
   examples: [
-    { pattern: '[vox]', target: 'vox', move: false, why: 'copy the public channel into its own tab' },
-    { pattern: '/tells you,/', target: 'tells', move: true, why: 'keep private messages out of the terminal' },
-    { pattern: '/^(You|.+) (hit|miss|parr)/', target: 'combat', move: true, why: 'put combat lines in their own tab' },
-  ],
+    { match: '[vox]', mode: 'text', target: 'vox', move: false, why: 'copy the public channel into its own tab' },
+    { match: 'tells you,', mode: 'text', target: 'tells', move: true, why: 'keep private messages out of the terminal' },
+    { match: '^(You|.+) (hit|miss|parr)', mode: 'regex', target: 'combat', move: true, why: 'put combat lines in their own tab' },
+  ] as Array<{ match: string; mode: MatchMode; target: string; move: boolean; why: string }>,
   useExample: 'Use',
   rulesTitle: 'Rules',
   rulesHint: 'checked in order, top to bottom',
@@ -28,7 +34,11 @@ export const PAGE = {
   addRule: 'Add rule',
   enabled: 'Enabled',
   pattern: 'Match',
-  patternPh: 'text or /regex/',
+  patternPh: (mode: MatchMode) => (mode === 'regex' ? 'regular expression' : 'text to find'),
+  text: 'Text',
+  regex: 'Regex',
+  matchLabel: 'How the match is read',
+  matchHint: (mode: MatchMode) => (mode === 'regex' ? 'a regular expression' : 'plain text, anywhere in the line'),
   target: 'Feed',
   targetPh: 'feed name',
   targetMissing: 'Name the feed, or this rule does nothing.',
@@ -80,6 +90,7 @@ export const PAGE_CSS = [
   '.mu-feeds-page .fr-ex { display: flex; align-items: center; gap: .8ch; flex-wrap: wrap; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: .74rem; }',
   '.mu-feeds-page .fr-ex:last-child { border-bottom: 0; }',
   '.mu-feeds-page .fr-ex-pat { font-family: inherit; color: var(--fg); padding: 0 .4ch; background: var(--bg-deep); }',
+  '.mu-feeds-page .fr-ex-how { color: var(--fg-faint); font-size: .62rem; letter-spacing: .14em; text-transform: uppercase; }',
   '.mu-feeds-page .fr-ex-feed { color: var(--accent-bright); font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; }',
   '.mu-feeds-page .fr-ex-why { flex: 1 1 12ch; color: var(--fg-faint); font-size: .7rem; }',
   '.mu-feeds-page .fr-ex-use { margin-left: auto; }',
@@ -88,6 +99,35 @@ export const PAGE_CSS = [
   '.mu-feeds-page .fr-trial.hit { border-left-color: var(--ok); color: var(--fg); }',
   '.mu-feeds-page .fr-foot-note { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); font-size: .74rem; color: var(--fg-dim); }',
 ].join('\n');
+
+/** How a rule's match is read. */
+export type MatchMode = 'text' | 'regex';
+/** A rule as this page and the store keep it: the host's `RouteRule` plus what the player typed and how it is read. */
+export type FeedRule = RouteRule & { match: string; mode: MatchMode; flags?: string };
+
+const REGEX_FORM = /^\/(.+)\/([a-z]*)$/s;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The host pattern for a match in a mode. The SDK 1.14 matcher reads `/re/flags` as a regex (default flag i) and any
+ * other string as text, so Text is escaped and wrapped (`/\[vox\]/i`: the same case-insensitive substring, and a
+ * text that happens to look like `/x/` stays literal) and Regex is wrapped (`.+` → `/.+/`). Empty stays empty.
+ */
+export function hostPattern(match: string, mode: MatchMode, flags = ''): string {
+  const m = String(match ?? '').trim();
+  if (!m) return '';
+  return mode === 'regex' ? `/${m}/${flags}` : `/${escapeRe(m)}/i`;
+}
+
+/**
+ * A pattern stored without a mode, read the 1.14 way: `/re/flags` is a regex (the flags kept), anything else text.
+ * `hostPattern` of the result matches exactly what the stored pattern matched, so an old rule routes as before.
+ */
+export function fromLegacy(pattern: string): { match: string; mode: MatchMode; flags?: string } {
+  const p = String(pattern ?? '').trim();
+  const m = REGEX_FORM.exec(p);
+  return m ? { match: m[1], mode: 'regex', ...(m[2] ? { flags: m[2] } : {}) } : { match: p, mode: 'text' };
+}
 
 let seq = 0;
 /** A rule id unique enough for one player's list. */
@@ -100,15 +140,32 @@ export function move<T>(list: T[], i: number, d: number) {
   [list[i], list[j]] = [list[j], list[i]];
 }
 
-/** The stored value as rules: a list of objects, `target` a string (an unconverted core `label` is read as the target). */
-export function readRules(v: unknown): RouteRule[] {
+/**
+ * The stored value as rules: a list of objects, `target` a string (an unconverted core `label` is read as the target).
+ * A rule with a `mode` keeps its `match`; one without (2.0.0 or the core copy) gets both from its `pattern`. `pattern`
+ * is always rewritten from `match` and `mode`, so the router sees what the card shows.
+ */
+export function readRules(v: unknown): FeedRule[] {
   if (!Array.isArray(v)) return [];
-  return v.filter((r) => r && typeof r === 'object').map((r: Record<string, unknown>) => ({
-    ...(r as object),
-    id: typeof r.id === 'string' && r.id ? r.id : newId(),
-    pattern: typeof r.pattern === 'string' ? r.pattern : '',
-    target: typeof r.target === 'string' ? r.target : typeof r.label === 'string' ? r.label : '',
-  } as RouteRule));
+  return v.filter((r) => r && typeof r === 'object').map((r: Record<string, unknown>) => {
+    const pattern = typeof r.pattern === 'string' ? r.pattern : '';
+    const how = r.mode === 'text' || r.mode === 'regex'
+      ? { match: typeof r.match === 'string' ? r.match : fromLegacy(pattern).match, mode: r.mode as MatchMode, ...(typeof r.flags === 'string' && r.flags ? { flags: r.flags } : {}) }
+      : fromLegacy(pattern);
+    const { flags: _f, ...rest } = r as Record<string, unknown>;
+    return {
+      ...rest,
+      id: typeof r.id === 'string' && r.id ? r.id : newId(),
+      ...how,
+      pattern: hostPattern(how.match, how.mode, how.mode === 'regex' ? how.flags : ''),
+      target: typeof r.target === 'string' ? r.target : typeof r.label === 'string' ? r.label : '',
+    } as FeedRule;
+  });
+}
+
+/** Why a match does not work in its mode ('' when it does, or is empty), from the host's checker. */
+export function matchError(mu: Pick<Mu, 'lines'>, r: Pick<FeedRule, 'match' | 'mode' | 'flags'>): string {
+  return mu.lines.patternError(hostPattern(r.match, r.mode, r.mode === 'regex' ? r.flags : ''));
 }
 
 export function createSettingsPage(mu: Mu) {
@@ -117,7 +174,7 @@ export function createSettingsPage(mu: Mu) {
     name: 'FeedsSettingsPage',
     props: { sid: { type: String, default: null }, worldId: { type: String, default: null }, params: { type: Object, default: () => ({}) } },
     setup(props) {
-      const rules = shallowRef<RouteRule[]>([]);
+      const rules = shallowRef<FeedRule[]>([]);
       let off: Dispose | null = null;
       watch(() => props.worldId, (wid) => {
         off?.(); off = null;
@@ -127,19 +184,20 @@ export function createSettingsPage(mu: Mu) {
       onBeforeUnmount(() => { off?.(); off = null; });
 
       /** Edit a copy of the world's rules and write it back. */
-      const edit = (fn: (r: RouteRule[]) => void) => {
+      const edit = (fn: (r: FeedRule[]) => void) => {
         const wid = props.worldId;
         if (!wid) return;
         const next = readRules(mu.settings.get<unknown>(ROUTES_KEY, { worldId: wid })).map((r) => ({ ...r }));
         fn(next);
+        for (const r of next) r.pattern = hostPattern(r.match, r.mode, r.mode === 'regex' ? r.flags : '');
         mu.settings.set(ROUTES_KEY, next, wid);
         rules.value = next;
       };
-      const set = (i: number, p: Partial<RouteRule>) => edit((l) => { if (l[i]) Object.assign(l[i], p); });
+      const set = (i: number, p: Partial<FeedRule>) => edit((l) => { if (l[i]) Object.assign(l[i], p); });
       const val = (e: Event) => (e.target as HTMLInputElement).value;
-      const add = (seed?: { pattern: string; target: string; move: boolean }) =>
-        edit((l) => { l.push({ id: newId(), pattern: seed?.pattern ?? '', target: seed?.target ?? '', move: seed?.move ?? false }); });
-      const hasExample = (ex: { pattern: string; target: string }) => rules.value.some((r) => r.pattern === ex.pattern && r.target === ex.target);
+      const add = (seed?: { match: string; mode: MatchMode; target: string; move: boolean }) =>
+        edit((l) => { l.push({ id: newId(), match: seed?.match ?? '', mode: seed?.mode ?? 'text', pattern: '', target: seed?.target ?? '', move: seed?.move ?? false }); });
+      const hasExample = (ex: { match: string; mode: MatchMode; target: string }) => rules.value.some((r) => r.match === ex.match && r.mode === ex.mode && r.target === ex.target);
       const targets = computed(() => [...new Set(rules.value.map((r) => r.target.trim()).filter(Boolean))]);
 
       const root = ref<HTMLElement | null>(null);
@@ -155,17 +213,17 @@ export function createSettingsPage(mu: Mu) {
       const openPanel = () => mu.panels.open('feeds', undefined, props.sid ? { sid: props.sid } : undefined);
 
       const grp = (title: string, hint?: string) => h('div', { class: 'fr-grp' }, [title, hint ? h('span', { class: 'fr-hint' }, hint) : null]);
-      const card = (r: RouteRule, i: number, n: number) => {
-        const err = mu.lines.patternError(r.pattern);
-        const noTarget = !r.target.trim() && !!r.pattern.trim();
+      const card = (r: FeedRule, i: number, n: number) => {
+        const err = matchError(mu, r);
+        const noTarget = !r.target.trim() && !!r.match.trim();
         const on = r.enabled !== false;
         return h('div', { key: r.id, class: ['fr-card', { off: !on }], role: 'group', 'aria-label': `Rule ${i + 1}`, 'data-rule': 'route' }, [
           h('div', { class: 'fr-row' }, [
             h('label', { class: 'fr-field fr-grow' }, [
               h('span', { class: c.label }, PAGE.pattern),
               h('input', {
-                class: [c.field, 'fr-match'], placeholder: PAGE.patternPh, value: r.pattern, 'aria-label': `Rule ${i + 1} pattern`,
-                'aria-invalid': !!err, spellcheck: false, onInput: (e: Event) => set(i, { pattern: val(e) }),
+                class: [c.field, 'fr-match'], placeholder: PAGE.patternPh(r.mode), value: r.match, 'aria-label': `Rule ${i + 1} pattern`,
+                'aria-invalid': !!err, spellcheck: false, onInput: (e: Event) => set(i, { match: val(e) }),
               }),
             ]),
             h('span', { class: 'fr-arrow', 'aria-hidden': 'true' }, '→'),
@@ -178,6 +236,11 @@ export function createSettingsPage(mu: Mu) {
             ]),
           ]),
           h('div', { class: 'fr-row fr-foot' }, [
+            h('div', { class: 'fr-mode fr-how', role: 'radiogroup', 'aria-label': `Rule ${i + 1}: ${PAGE.matchLabel}` }, [
+              h('button', { type: 'button', role: 'radio', class: c.toggle, 'aria-checked': r.mode === 'text', 'data-match': 'text', onClick: () => set(i, { mode: 'text' }) }, PAGE.text),
+              h('button', { type: 'button', role: 'radio', class: c.toggle, 'aria-checked': r.mode === 'regex', 'data-match': 'regex', onClick: () => set(i, { mode: 'regex' }) }, PAGE.regex),
+              h('span', { class: 'fr-modehint' }, PAGE.matchHint(r.mode)),
+            ]),
             h('div', { class: 'fr-mode', role: 'radiogroup', 'aria-label': PAGE.modeLabel }, [
               h('button', { type: 'button', role: 'radio', class: c.toggle, 'aria-checked': !r.move, 'data-mode': 'copy', onClick: () => set(i, { move: false }) }, PAGE.copy),
               h('button', { type: 'button', role: 'radio', class: c.toggle, 'aria-checked': !!r.move, 'data-mode': 'move', onClick: () => set(i, { move: true }) }, PAGE.move),
@@ -207,13 +270,14 @@ export function createSettingsPage(mu: Mu) {
           h('button', { type: 'button', class: [c.cmd, c.primary, 'fr-add'], 'data-testid': 'feeds-add-rule', onClick: addAndFocus }, PAGE.addRule),
 
           grp(PAGE.examplesTitle),
-          h('ul', { class: 'fr-examples' }, PAGE.examples.map((ex) => h('li', { key: ex.pattern, class: 'fr-ex' }, [
-            h('code', { class: 'fr-ex-pat' }, ex.pattern),
+          h('ul', { class: 'fr-examples' }, PAGE.examples.map((ex) => h('li', { key: ex.match, class: 'fr-ex' }, [
+            h('code', { class: 'fr-ex-pat' }, ex.match),
+            h('span', { class: 'fr-ex-how' }, (ex.mode === 'regex' ? PAGE.regex : PAGE.text).toLowerCase()),
             h('span', { class: 'fr-arrow', 'aria-hidden': 'true' }, '→'),
             h('span', { class: 'fr-ex-feed' }, ex.target),
             h('span', { class: 'fr-ex-why' }, `${ex.why} (${(ex.move ? PAGE.move : PAGE.copy).toLowerCase()})`),
             h('button', {
-              type: 'button', class: [c.cmd, 'fr-ex-use'], disabled: hasExample(ex), 'aria-label': `Use example: ${ex.pattern} to ${ex.target}`,
+              type: 'button', class: [c.cmd, 'fr-ex-use'], disabled: hasExample(ex), 'aria-label': `Use example: ${ex.match} to ${ex.target}`,
               'data-testid': 'feeds-example', onClick: () => add(ex),
             }, PAGE.useExample),
           ]))),

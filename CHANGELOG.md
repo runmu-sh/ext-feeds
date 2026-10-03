@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0
+
+- Each rule has a **Text | Regex** toggle for how its Match is read, and nothing is guessed from what you type. Text matches the characters exactly, anywhere in the line, ignoring case (`[vox]`, `(.+)` and `/x/` are literal). Regex reads the Match as a regular expression, ignoring case: `.+` or `(.+)` takes every line. Before this, a rule like `(.+)` without slashes was read as text and matched nothing.
+- Rules saved before 2.1 open as they matched: a `/re/flags` pattern as Regex (flags kept), anything else as Text. The first edit writes them in the new shape (`match`, `mode`, and the `pattern` the host routes on).
+- Feed lines keep the game's ANSI colours. They now sit inside the host's terminal palette scope (`.mu-ansi`), so `.c-NNN`, `.bg-NNN`, bold and dim apply as in the terminal. Highlights and custom colours already came through.
+- The examples show their mode; the How to match note and the empty-panel text explain Text and Regex.
+
 ## 2.0.0
 
 Breaking: needs μClient SDK 1.14 (`api ^1.14`). The client core no longer routes lines into feeds, keeps feed buffers or has its own Feeds page; this extension now does all three.

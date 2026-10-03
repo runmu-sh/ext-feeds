@@ -31,7 +31,7 @@ export const COPY = {
   jumpLatest: 'Jump to the latest line',
   /** The empty panel: what a feed is and how to get one. */
   introHead: 'No feeds yet',
-  introText: 'A feed is a side channel of the terminal. A rule in Settings → Feeds watches the game\'s output for a word or a /regex/ and copies or moves each matching line into a feed of your choosing. Every feed gets a tab here.',
+  introText: 'A feed is a side channel of the terminal. A rule in Settings → Feeds watches the game\'s output for some text or a regular expression and copies or moves each matching line into a feed of your choosing. Every feed gets a tab here.',
   introSteps: ['Open Settings → Feeds, the ⇶ Feeds tile (or press Add a feed).', 'Add a rule: what to match, and the feed it goes to.', 'Lines land here as the game sends them.'],
   /** Under “Empty.” in a feed that has no lines yet. */
   emptyHint: (label: string) => `Lines your rules send to “${label}” will show up here.`,
@@ -48,6 +48,12 @@ export const COPY = {
   tabTip: (label: string, n: number) => `${label} · ${n} line${n === 1 ? '' : 's'} · double-click to pop out`,
   lineCount: (n: number) => `${n} line${n === 1 ? '' : 's'}`,
 };
+
+/**
+ * The host's terminal-palette scope (SDK 1.12: the `.c-NNN`, `.bg-NNN`, `.b`, `.dim` … classes a line's spans carry
+ * apply only inside `.term` or `.mu-ansi`). Each feed line carries it, so routed lines keep the game's colours.
+ */
+export const ANSI = 'mu-ansi';
 
 /** Every rule is scoped to this extension's panels (`mu.ui.style` puts them in `@layer ext.feeds`). */
 export const SCOPE = '.ext-panel[data-ext="feeds"]';

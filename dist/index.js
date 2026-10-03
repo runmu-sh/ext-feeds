@@ -28,7 +28,7 @@ var COPY = {
   jumpLatest: "Jump to the latest line",
   /** The empty panel: what a feed is and how to get one. */
   introHead: "No feeds yet",
-  introText: "A feed is a side channel of the terminal. A rule in Settings \u2192 Feeds watches the game's output for a word or a /regex/ and copies or moves each matching line into a feed of your choosing. Every feed gets a tab here.",
+  introText: "A feed is a side channel of the terminal. A rule in Settings \u2192 Feeds watches the game's output for some text or a regular expression and copies or moves each matching line into a feed of your choosing. Every feed gets a tab here.",
   introSteps: ["Open Settings \u2192 Feeds, the \u21F6 Feeds tile (or press Add a feed).", "Add a rule: what to match, and the feed it goes to.", "Lines land here as the game sends them."],
   /** Under “Empty.” in a feed that has no lines yet. */
   emptyHint: (label) => `Lines your rules send to \u201C${label}\u201D will show up here.`,
@@ -45,6 +45,7 @@ var COPY = {
   tabTip: (label, n) => `${label} \xB7 ${n} line${n === 1 ? "" : "s"} \xB7 double-click to pop out`,
   lineCount: (n) => `${n} line${n === 1 ? "" : "s"}`
 };
+var ANSI = "mu-ansi";
 var SCOPE = '.ext-panel[data-ext="feeds"]';
 var FEEDS_CSS = [
   ".mu-feeds { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-elev); container-type: inline-size; }",
@@ -364,7 +365,7 @@ function createPanel(mu, store, reading) {
           h("dl", null, COPY.helpRows.flatMap(([k, v]) => [h("dt", { key: `${k}:t` }, k), h("dd", { key: `${k}:d` }, v)])),
           h("p", null, COPY.helpNote)
         ]) : null;
-        const rows = shown.value.map((l) => h("div", { key: l.id, class: ["fline", l.rowCls], "data-testid": "feed-line" }, [
+        const rows = shown.value.map((l) => h("div", { key: l.id, class: ["fline", ANSI, l.rowCls], "data-testid": "feed-line" }, [
           times.value ? h("span", { class: "ts" }, hhmmss(l.ts)) : null,
           ...l.spans.map(spanOf)
         ]));
@@ -513,12 +514,12 @@ import { computed as computed2, defineComponent as defineComponent2, h as h2, ne
 var PAGE = {
   intro: "A feed is a side channel of the terminal. Each rule below watches every line the game sends; a matching line is copied into the named feed, or moved there so the terminal stays quiet. The Feeds panel shows one tab per feed.",
   howTitle: "How to match",
-  howText: "Plain text matches anywhere in the line, ignoring case. Wrap a regular expression in slashes: /^\\w+ tells you/. Several rules may share one feed, and a line may land in several feeds.",
+  howText: "Each rule matches as Text or as a Regex. Text matches anywhere in the line, ignoring case, exactly as typed: [vox] means the five characters [vox]. Regex reads the match as a regular expression, ignoring case: ^\\w+ tells you, or .+ for every line. Several rules may share one feed, and a line may land in several feeds.",
   examplesTitle: "Examples",
   examples: [
-    { pattern: "[vox]", target: "vox", move: false, why: "copy the public channel into its own tab" },
-    { pattern: "/tells you,/", target: "tells", move: true, why: "keep private messages out of the terminal" },
-    { pattern: "/^(You|.+) (hit|miss|parr)/", target: "combat", move: true, why: "put combat lines in their own tab" }
+    { match: "[vox]", mode: "text", target: "vox", move: false, why: "copy the public channel into its own tab" },
+    { match: "tells you,", mode: "text", target: "tells", move: true, why: "keep private messages out of the terminal" },
+    { match: "^(You|.+) (hit|miss|parr)", mode: "regex", target: "combat", move: true, why: "put combat lines in their own tab" }
   ],
   useExample: "Use",
   rulesTitle: "Rules",
@@ -527,7 +528,11 @@ var PAGE = {
   addRule: "Add rule",
   enabled: "Enabled",
   pattern: "Match",
-  patternPh: "text or /regex/",
+  patternPh: (mode) => mode === "regex" ? "regular expression" : "text to find",
+  text: "Text",
+  regex: "Regex",
+  matchLabel: "How the match is read",
+  matchHint: (mode) => mode === "regex" ? "a regular expression" : "plain text, anywhere in the line",
   target: "Feed",
   targetPh: "feed name",
   targetMissing: "Name the feed, or this rule does nothing.",
@@ -579,6 +584,7 @@ var PAGE_CSS = [
   ".mu-feeds-page .fr-ex { display: flex; align-items: center; gap: .8ch; flex-wrap: wrap; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: .74rem; }",
   ".mu-feeds-page .fr-ex:last-child { border-bottom: 0; }",
   ".mu-feeds-page .fr-ex-pat { font-family: inherit; color: var(--fg); padding: 0 .4ch; background: var(--bg-deep); }",
+  ".mu-feeds-page .fr-ex-how { color: var(--fg-faint); font-size: .62rem; letter-spacing: .14em; text-transform: uppercase; }",
   ".mu-feeds-page .fr-ex-feed { color: var(--accent-bright); font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; }",
   ".mu-feeds-page .fr-ex-why { flex: 1 1 12ch; color: var(--fg-faint); font-size: .7rem; }",
   ".mu-feeds-page .fr-ex-use { margin-left: auto; }",
@@ -587,6 +593,18 @@ var PAGE_CSS = [
   ".mu-feeds-page .fr-trial.hit { border-left-color: var(--ok); color: var(--fg); }",
   ".mu-feeds-page .fr-foot-note { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); font-size: .74rem; color: var(--fg-dim); }"
 ].join("\n");
+var REGEX_FORM = /^\/(.+)\/([a-z]*)$/s;
+var escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function hostPattern(match, mode, flags = "") {
+  const m = String(match ?? "").trim();
+  if (!m) return "";
+  return mode === "regex" ? `/${m}/${flags}` : `/${escapeRe(m)}/i`;
+}
+function fromLegacy(pattern) {
+  const p = String(pattern ?? "").trim();
+  const m = REGEX_FORM.exec(p);
+  return m ? { match: m[1], mode: "regex", ...m[2] ? { flags: m[2] } : {} } : { match: p, mode: "text" };
+}
 var seq = 0;
 var newId = () => `f${Date.now().toString(36)}${(seq++).toString(36)}`;
 function move(list, i, d) {
@@ -596,12 +614,21 @@ function move(list, i, d) {
 }
 function readRules(v) {
   if (!Array.isArray(v)) return [];
-  return v.filter((r) => r && typeof r === "object").map((r) => ({
-    ...r,
-    id: typeof r.id === "string" && r.id ? r.id : newId(),
-    pattern: typeof r.pattern === "string" ? r.pattern : "",
-    target: typeof r.target === "string" ? r.target : typeof r.label === "string" ? r.label : ""
-  }));
+  return v.filter((r) => r && typeof r === "object").map((r) => {
+    const pattern = typeof r.pattern === "string" ? r.pattern : "";
+    const how = r.mode === "text" || r.mode === "regex" ? { match: typeof r.match === "string" ? r.match : fromLegacy(pattern).match, mode: r.mode, ...typeof r.flags === "string" && r.flags ? { flags: r.flags } : {} } : fromLegacy(pattern);
+    const { flags: _f, ...rest } = r;
+    return {
+      ...rest,
+      id: typeof r.id === "string" && r.id ? r.id : newId(),
+      ...how,
+      pattern: hostPattern(how.match, how.mode, how.mode === "regex" ? how.flags : ""),
+      target: typeof r.target === "string" ? r.target : typeof r.label === "string" ? r.label : ""
+    };
+  });
+}
+function matchError(mu, r) {
+  return mu.lines.patternError(hostPattern(r.match, r.mode, r.mode === "regex" ? r.flags : ""));
 }
 function createSettingsPage(mu) {
   const c = mu.ui.css;
@@ -628,6 +655,7 @@ function createSettingsPage(mu) {
         if (!wid) return;
         const next = readRules(mu.settings.get(ROUTES_KEY, { worldId: wid })).map((r) => ({ ...r }));
         fn(next);
+        for (const r of next) r.pattern = hostPattern(r.match, r.mode, r.mode === "regex" ? r.flags : "");
         mu.settings.set(ROUTES_KEY, next, wid);
         rules.value = next;
       };
@@ -636,9 +664,9 @@ function createSettingsPage(mu) {
       });
       const val = (e) => e.target.value;
       const add = (seed) => edit((l) => {
-        l.push({ id: newId(), pattern: seed?.pattern ?? "", target: seed?.target ?? "", move: seed?.move ?? false });
+        l.push({ id: newId(), match: seed?.match ?? "", mode: seed?.mode ?? "text", pattern: "", target: seed?.target ?? "", move: seed?.move ?? false });
       });
-      const hasExample = (ex) => rules.value.some((r) => r.pattern === ex.pattern && r.target === ex.target);
+      const hasExample = (ex) => rules.value.some((r) => r.match === ex.match && r.mode === ex.mode && r.target === ex.target);
       const targets = computed2(() => [...new Set(rules.value.map((r) => r.target.trim()).filter(Boolean))]);
       const root = ref2(null);
       const addAndFocus = () => {
@@ -655,8 +683,8 @@ function createSettingsPage(mu) {
       const openPanel = () => mu.panels.open("feeds", void 0, props.sid ? { sid: props.sid } : void 0);
       const grp = (title, hint) => h2("div", { class: "fr-grp" }, [title, hint ? h2("span", { class: "fr-hint" }, hint) : null]);
       const card = (r, i, n) => {
-        const err = mu.lines.patternError(r.pattern);
-        const noTarget = !r.target.trim() && !!r.pattern.trim();
+        const err = matchError(mu, r);
+        const noTarget = !r.target.trim() && !!r.match.trim();
         const on = r.enabled !== false;
         return h2("div", { key: r.id, class: ["fr-card", { off: !on }], role: "group", "aria-label": `Rule ${i + 1}`, "data-rule": "route" }, [
           h2("div", { class: "fr-row" }, [
@@ -664,12 +692,12 @@ function createSettingsPage(mu) {
               h2("span", { class: c.label }, PAGE.pattern),
               h2("input", {
                 class: [c.field, "fr-match"],
-                placeholder: PAGE.patternPh,
-                value: r.pattern,
+                placeholder: PAGE.patternPh(r.mode),
+                value: r.match,
                 "aria-label": `Rule ${i + 1} pattern`,
                 "aria-invalid": !!err,
                 spellcheck: false,
-                onInput: (e) => set(i, { pattern: val(e) })
+                onInput: (e) => set(i, { match: val(e) })
               })
             ]),
             h2("span", { class: "fr-arrow", "aria-hidden": "true" }, "\u2192"),
@@ -688,6 +716,11 @@ function createSettingsPage(mu) {
             ])
           ]),
           h2("div", { class: "fr-row fr-foot" }, [
+            h2("div", { class: "fr-mode fr-how", role: "radiogroup", "aria-label": `Rule ${i + 1}: ${PAGE.matchLabel}` }, [
+              h2("button", { type: "button", role: "radio", class: c.toggle, "aria-checked": r.mode === "text", "data-match": "text", onClick: () => set(i, { mode: "text" }) }, PAGE.text),
+              h2("button", { type: "button", role: "radio", class: c.toggle, "aria-checked": r.mode === "regex", "data-match": "regex", onClick: () => set(i, { mode: "regex" }) }, PAGE.regex),
+              h2("span", { class: "fr-modehint" }, PAGE.matchHint(r.mode))
+            ]),
             h2("div", { class: "fr-mode", role: "radiogroup", "aria-label": PAGE.modeLabel }, [
               h2("button", { type: "button", role: "radio", class: c.toggle, "aria-checked": !r.move, "data-mode": "copy", onClick: () => set(i, { move: false }) }, PAGE.copy),
               h2("button", { type: "button", role: "radio", class: c.toggle, "aria-checked": !!r.move, "data-mode": "move", onClick: () => set(i, { move: true }) }, PAGE.move),
@@ -716,8 +749,9 @@ function createSettingsPage(mu) {
           h2("datalist", { id: "mu-feeds-names" }, targets.value.map((l) => h2("option", { key: l, value: l }))),
           h2("button", { type: "button", class: [c.cmd, c.primary, "fr-add"], "data-testid": "feeds-add-rule", onClick: addAndFocus }, PAGE.addRule),
           grp(PAGE.examplesTitle),
-          h2("ul", { class: "fr-examples" }, PAGE.examples.map((ex) => h2("li", { key: ex.pattern, class: "fr-ex" }, [
-            h2("code", { class: "fr-ex-pat" }, ex.pattern),
+          h2("ul", { class: "fr-examples" }, PAGE.examples.map((ex) => h2("li", { key: ex.match, class: "fr-ex" }, [
+            h2("code", { class: "fr-ex-pat" }, ex.match),
+            h2("span", { class: "fr-ex-how" }, (ex.mode === "regex" ? PAGE.regex : PAGE.text).toLowerCase()),
             h2("span", { class: "fr-arrow", "aria-hidden": "true" }, "\u2192"),
             h2("span", { class: "fr-ex-feed" }, ex.target),
             h2("span", { class: "fr-ex-why" }, `${ex.why} (${(ex.move ? PAGE.move : PAGE.copy).toLowerCase()})`),
@@ -725,7 +759,7 @@ function createSettingsPage(mu) {
               type: "button",
               class: [c.cmd, "fr-ex-use"],
               disabled: hasExample(ex),
-              "aria-label": `Use example: ${ex.pattern} to ${ex.target}`,
+              "aria-label": `Use example: ${ex.match} to ${ex.target}`,
               "data-testid": "feeds-example",
               onClick: () => add(ex)
             }, PAGE.useExample)

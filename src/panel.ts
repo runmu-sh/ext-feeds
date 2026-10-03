@@ -7,7 +7,7 @@
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, ref, shallowRef, watch, type VNode } from 'vue';
 import type { Dispose, FeedLineView, Mu } from '@muclient/sdk';
 import {
-  COPY, filterLines, hhmmss, keepSelection, labelsOf, nearEnd, newTail, pillOf, readingOf, soloOf, stepTail, tabLabel,
+  ANSI, COPY, filterLines, hhmmss, keepSelection, labelsOf, nearEnd, newTail, pillOf, readingOf, soloOf, stepTail, tabLabel,
   tabTarget, unreadOf, type FeedsState, type Readers, type Tail,
 } from './model';
 import type { FeedStore } from './store';
@@ -160,7 +160,7 @@ export function createPanel(mu: Mu, store: Pick<FeedStore, 'watch' | 'clear'>, r
           h('dl', null, COPY.helpRows.flatMap(([k, v]) => [h('dt', { key: `${k}:t` }, k), h('dd', { key: `${k}:d` }, v)])),
           h('p', null, COPY.helpNote),
         ]) : null;
-        const rows = shown.value.map((l) => h('div', { key: l.id, class: ['fline', l.rowCls], 'data-testid': 'feed-line' }, [
+        const rows = shown.value.map((l) => h('div', { key: l.id, class: ['fline', ANSI, l.rowCls], 'data-testid': 'feed-line' }, [
           times.value ? h('span', { class: 'ts' }, hhmmss(l.ts)) : null,
           ...l.spans.map(spanOf),
         ]));

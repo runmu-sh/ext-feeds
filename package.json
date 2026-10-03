@@ -1,6 +1,6 @@
 {
   "name": "@runmu.sh/ext-feeds",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "The Feeds panel and its routing rules: a tab per feed your rules fill (its own Settings page, per world), with unread badges, search, timestamps, pop-out, clear and built-in help.",
   "keywords": [
     "feeds",

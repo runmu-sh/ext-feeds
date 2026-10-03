@@ -61,6 +61,7 @@ test('a rule in `routes` sends a line into the feed and the panel shows it; a mo
   assert.equal(copy.moved, false);
   await nextTick();
   assert.deepEqual([...el.querySelectorAll('[data-testid="feed-line"]')].map((l) => l.textContent), ['Bob pages: hi there']);
+  assert.ok(el.querySelector('[data-testid="feed-line"]').classList.contains('mu-ansi'), 'lines sit in the terminal palette scope');
   assert.deepEqual(touches(host), [['feeds', 's1']], 'first line auto-adds the panel');
 
   const move = host.route('[OOC] Ann: hello', { sid: 's1' });
@@ -74,6 +75,28 @@ test('a rule in `routes` sends a line into the feed and the panel shows it; a mo
   app.unmount();
   await host.unload();
   assert.deepEqual(host.live(), []);
+  assert.deepEqual(host.errors, []);
+});
+
+test('a routed line keeps its colours: span classes and styles render inside the palette scope (.mu-ansi)', async () => {
+  const { createApp, nextTick } = await import('vue');
+  const host = createHost({ settings: { routes: [rule('r1', 'hall', 'look')] } });
+  await host.load('src/index.ts');
+  const el = document.createElement('div');
+  document.body.append(el);
+  const app = createApp(host.panels.get('feeds').mount.component, { sid: 's1', worldId: 'w1' });
+  app.mount(el);
+  await nextTick();
+  const spans = [{ text: 'The ', cls: 'c-003 b' }, { text: 'Great Hall', cls: 'hl hl-gold' }, { text: ' glows', style: 'color:#a0b0c0;' }];
+  // The dev host's route() makes plain lines; hand the router a coloured one as μClient does.
+  host.routers[0].deliver('look', { id: 1, ts: 0, text: 'The Great Hall glows', spans }, { sid: 's1', worldId: 'w1', move: false });
+  await nextTick();
+  const line = el.querySelector('[data-testid="feed-line"]');
+  assert.ok(line.classList.contains('mu-ansi'));
+  const got = [...line.querySelectorAll('span')].map((s) => [s.textContent, s.getAttribute('class'), s.getAttribute('style')]);
+  assert.deepEqual(got, [['The ', 'c-003 b', null], ['Great Hall', 'hl hl-gold', null], [' glows', null, 'color: #a0b0c0;']]);
+  app.unmount();
+  await host.unload();
   assert.deepEqual(host.errors, []);
 });
 
