@@ -1,6 +1,6 @@
 {
   "name": "@runmu.sh/ext-feeds",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "The Feeds panel and its routing rules: a tab per feed your rules fill (its own Settings page, per world), with unread badges, search, timestamps, pop-out, clear and built-in help.",
   "keywords": [
     "feeds",
@@ -34,8 +34,8 @@
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.14.5",
-    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.14.0",
-    "@runmu.sh/dev": "^0.3.0",
+    "@muclient/sdk": "npm:@runmu.sh/sdk@^1.15.0",
+    "@runmu.sh/dev": "^0.4.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0",
     "vue": "^3.5.0"

@@ -10,7 +10,7 @@ Until 1.0.0 the panel was part of the client core. Since 2.0.0 (μClient SDK 1.1
 1. Open **Settings → Feeds** (☰ → Settings, the ⇶ Feeds tile, or the **Rules** button in the panel). The page explains feeds and offers three one-click examples.
 2. Add a rule: **Match** is what to look for and the **Text | Regex** toggle says how it is read: Text matches exactly what you typed, anywhere in the line, any case; Regex reads it as a regular expression (any case), so `.+` takes every line; **Feed** is the tab the line goes to. Choose **Copy** (the line stays in the terminal too) or **Move** (the line leaves the terminal).
 3. Paste a line of game output into **Try it** to see which feed it would land in.
-4. Lines now land in the Feeds panel as the game sends them. The panel opens itself the first time a session gets one.
+4. Lines now land in the Feeds panel as the game sends them, and the earlier lines the client still holds are sorted in too (see [Rule changes apply to earlier lines](#rule-changes-apply-to-earlier-lines)). The panel opens itself the first time a session gets one.
 
 Examples:
 
@@ -24,6 +24,16 @@ Rules are per world and sync to your account. Feeds hold up to 500 lines each, p
 
 ## Where the lines come from
 No GMCP. Feeds are filled by the player's rules in **Settings → Feeds**, stored per world in the extension's `routes` setting (`RouteRule[]`: `pattern`, `target` feed, `move`, `enabled`, plus `match` and `mode` — `text` or `regex` — from which the page writes `pattern`: Text as an escaped `/…/i`, Regex as `/…/`). A line router (`mu.lines.route`, `edits: true`) delivers each matching line to the extension's own per-session store (`src/store.ts`); `edits: true` also lets triggers and other extensions copy or move a line into a feed (`LineEdit.copyTo/moveTo`). The tabs are the enabled rules' feeds in rule order, then any other feed holding lines.
+
+## Rule changes apply to earlier lines
+Since 2.2.0, changing the rules re-runs them over what the client already holds: add `(.+)` as Regex → `all` and the `all` feed fills at once with the session's earlier chat and terminal lines, colours included, not only with what comes next. Change a rule's feed and its lines move to the new tab; disable or delete a rule and its lines leave the feed.
+
+- Every open session of the world is rebuilt, whether or not a Feeds panel is open, about 150 ms after the last edit (the Settings page saves on every keystroke). The source is the client's held terminal lines (`mu.lines.query`, up to 5000), plus the lines the feeds already have that the terminal no longer holds (for example lines a Move rule took out), matched again with the new rules. Each feed keeps its newest 500.
+- Lines a trigger or another extension put in a feed (`copyTo` / `moveTo`) are not the rules' doing, so a rebuild keeps them and sorts the rebuilt lines around them.
+- Rebuilt history is not unread: badges only count lines that were already unread before the change and are still there. A feed whose lines did not change is left as it was.
+- **Clear** stays cleared: a rebuild doesn't bring back lines older than the newest line held when you cleared the feed.
+- The terminal is not rewritten. A new **Move** rule copies earlier lines into its feed but doesn't remove them from the terminal; only lines from then on leave it. Removing a Move rule doesn't put earlier lines back in the terminal.
+- On a μClient without SDK 1.15 (no `mu.lines.query`) the extension still loads (`api ^1.14`) and rules apply to new lines only, as in 2.1.
 
 ## What it shows
 - **`feeds`** (Views → Feeds, right bottom, order 50): a tab per feed with an unread badge (lines that arrived while you looked elsewhere). Arrow keys move between tabs (they wrap), Home and End go to the first and last. Hovering a tab shows its line count; double-clicking it pops the feed out.
@@ -43,7 +53,7 @@ The first line a session's feeds receive adds the `feeds` panel to that session'
 **Show panel** (added by the host for `show`): always listed, only once a feed has lines, or never.
 
 ## SDK
-SDK 1.14. Uses `mu.settings.define` (a `routes` json item per world, a hub `tile` and the page `component`) `/get/set/watch/open`, `mu.lines.route/testRoutes/patternError`, `mu.panels.register` (`show: 'always'`) `/open/touch/vue`, `mu.sessions.each`, `mu.ui.confirm`, `mu.ui.style` (rules scoped under `.ext-panel[data-ext="feeds"]`) and the `mu.ui.css` primitives. Capability `read-output` (it shows game text). It exports no API. `tests/model.test.mjs` covers the pure helpers in `src/model.ts`; `tests/store.test.mjs` the line store; `tests/host.test.mjs` runs the extension in the headless host from `@runmu.sh/dev/test`, and `tests/page.test.mjs` drives the settings page there (happy-dom).
+SDK 1.14, with 1.15's `mu.lines.query` when the host has it (feature-detected; `api` stays `^1.14`). Uses `mu.settings.define` (a `routes` json item per world, a hub `tile` and the page `component`) `/get/set/watch/open`, `mu.lines.route/testRoutes/patternError/query`, `mu.panels.register` (`show: 'always'`) `/open/touch/vue`, `mu.sessions.each`, `mu.ui.confirm`, `mu.ui.style` (rules scoped under `.ext-panel[data-ext="feeds"]`) and the `mu.ui.css` primitives. Capability `read-output` (it shows game text). It exports no API. `tests/model.test.mjs` covers the pure helpers in `src/model.ts`; `tests/store.test.mjs` the line store; `tests/rerun.test.mjs` re-running rule changes over held lines (store and whole extension); `tests/host.test.mjs` runs the extension in the headless host from `@runmu.sh/dev/test`, and `tests/page.test.mjs` drives the settings page there (happy-dom).
 
 ## Develop
 Made with `npm create @runmu.sh/extension` ([the quickstart](https://runmu.sh/docs/extensions/quickstart)).

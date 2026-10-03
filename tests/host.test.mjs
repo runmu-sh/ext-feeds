@@ -116,11 +116,11 @@ test('the first routed line of each session touches the feeds panel once', async
   assert.deepEqual(host.errors, []);
 });
 
-test('manifest: SDK 1.14, the panels and settings page it registers, and only what it uses', async () => {
+test('manifest: api ^1.14 (1.15 feature-detected), SDK 1.15 types, the panels and settings page it registers, and only what it uses', async () => {
   const { readFileSync } = await import('node:fs');
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.muclient.api, '^1.14');
-  assert.equal(pkg.devDependencies['@muclient/sdk'], 'npm:@runmu.sh/sdk@^1.14.0');
+  assert.equal(pkg.devDependencies['@muclient/sdk'], 'npm:@runmu.sh/sdk@^1.15.0');
   assert.deepEqual(pkg.muclient.contributes.panels.map((p) => p.id), ['feeds', 'feed']);
   assert.equal(pkg.muclient.contributes.panels[0].show, 'always');
   // The tile shows before activation: the same page `mu.settings.define` registers.

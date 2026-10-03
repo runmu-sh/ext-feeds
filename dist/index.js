@@ -410,37 +410,48 @@ function createPanel(mu, store, reading) {
 // src/store.ts
 var FEED_CAP = 500;
 var ROUTES_KEY = "routes";
+var REBUILD_MS = 150;
+var QUERY_LIMIT = 5e3;
 function ruleTargets(rules) {
   if (!Array.isArray(rules)) return [];
   return rules.filter((r) => r && typeof r === "object" && r.enabled !== false).map((r) => typeof r.target === "string" ? r.target.trim() : "").filter(Boolean);
 }
+var before = (a, b) => a.ts - b.ts || (a.id > 0 && b.id > 0 ? a.id - b.id : 0);
+function merge(a, b, key) {
+  const out = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) out.push(before(key(b[j]), key(a[i])) < 0 ? b[j++] : a[i++]);
+  return out.concat(a.slice(i), b.slice(j));
+}
+var sameBuf = (x, y) => x.length === y.length && x.every((e, i) => e.line.id === y[i].line.id && e.edit === y[i].edit);
 function createStore(mu) {
   const sessions = /* @__PURE__ */ new Map();
   const session = (sid) => {
     let s = sessions.get(sid);
-    if (!s) sessions.set(sid, s = { lines: {}, unread: {}, viewing: "", fns: /* @__PURE__ */ new Set(), offRules: null });
+    if (!s) sessions.set(sid, s = { lines: {}, unread: {}, viewing: "", cleared: {}, fns: /* @__PURE__ */ new Set(), attached: 0, offRules: null, timer: null });
     return s;
   };
   const scope = (sid) => {
     const w = sessions.get(sid)?.worldId;
     return w ? { worldId: w } : { sid };
   };
-  const labelsFor = (sid) => {
-    let rules = [];
+  const rulesOf = (sid) => {
     try {
-      rules = mu.settings.get(ROUTES_KEY, scope(sid));
+      return mu.settings.get(ROUTES_KEY, scope(sid));
     } catch {
-      rules = [];
+      return [];
     }
+  };
+  const labelsFor = (sid) => {
     const lines = sessions.get(sid)?.lines ?? {};
     const withLines = Object.keys(lines).filter((l) => lines[l].length);
-    return [.../* @__PURE__ */ new Set([...ruleTargets(rules), ...withLines])];
+    return [.../* @__PURE__ */ new Set([...ruleTargets(rulesOf(sid)), ...withLines])];
   };
   const get = (sid) => {
     const s = sessions.get(sid);
     return {
       labels: labelsFor(sid),
-      lines: Object.fromEntries(Object.entries(s?.lines ?? {}).map(([l, buf]) => [l, [...buf]])),
+      lines: Object.fromEntries(Object.entries(s?.lines ?? {}).map(([l, buf]) => [l, buf.map((e) => e.line)])),
       unread: { ...s?.unread ?? {} }
     };
   };
@@ -450,12 +461,93 @@ function createStore(mu) {
     const state = get(sid);
     for (const fn of [...s.fns]) fn(state);
   };
+  const rebuild = (sid) => {
+    const s = sessions.get(sid);
+    const query = mu.lines?.query, testRoutes = mu.lines?.testRoutes;
+    if (!s || typeof query !== "function") return false;
+    const raw = rulesOf(sid);
+    const rules = Array.isArray(raw) ? raw : [];
+    let held;
+    try {
+      held = query(sid, { rules, limit: QUERY_LIMIT });
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(held)) return false;
+    const seen = new Set(held.map((h3) => h3.line.id));
+    const extra = /* @__PURE__ */ new Map();
+    for (const buf of Object.values(s.lines)) for (const e of buf) if (!e.edit && !seen.has(e.line.id)) extra.set(e.line.id, e.line);
+    const rematched = [];
+    if (typeof testRoutes === "function") {
+      for (const line of [...extra.values()].sort(before)) {
+        let r;
+        try {
+          r = testRoutes(line.text, rules);
+        } catch {
+          continue;
+        }
+        if (r?.targets?.length) rematched.push({ line, targets: r.targets, move: r.move });
+      }
+    }
+    const all = merge(held, rematched, (h3) => h3.line);
+    const derived = {};
+    for (const h3 of all) for (const t of h3.targets) {
+      const label = typeof t === "string" ? t.trim() : "";
+      const cut = label ? s.cleared[label] : void 0;
+      if (label && !(cut && before(h3.line, cut) <= 0)) (derived[label] ??= []).push({ line: h3.line, edit: false });
+    }
+    let changed = false;
+    for (const label of /* @__PURE__ */ new Set([...Object.keys(s.lines), ...Object.keys(derived)])) {
+      const old = s.lines[label] ?? [];
+      const edits = old.filter((e) => e.edit);
+      const editIds = new Set(edits.map((e) => e.line.id));
+      let next = merge((derived[label] ?? []).filter((e) => !editIds.has(e.line.id)), edits, (e) => e.line);
+      if (next.length > FEED_CAP) next = next.slice(next.length - FEED_CAP);
+      if (sameBuf(old, next)) continue;
+      changed = true;
+      const n = s.unread[label] ?? 0;
+      const was = new Set(old.slice(Math.max(0, old.length - n)).map((e) => `${e.edit ? "e" : "r"}${e.line.id}`));
+      s.lines[label] = next;
+      s.unread[label] = s.viewing === label ? 0 : next.filter((e) => was.has(`${e.edit ? "e" : "r"}${e.line.id}`)).length;
+    }
+    if (changed) emit(sid);
+    return true;
+  };
+  const schedule = (sid) => {
+    const s = sessions.get(sid);
+    if (!s || typeof mu.lines?.query !== "function") return;
+    if (s.timer) clearTimeout(s.timer);
+    s.timer = setTimeout(() => {
+      s.timer = null;
+      if (sessions.get(sid) === s) rebuild(sid);
+    }, REBUILD_MS);
+  };
   const followRules = (sid) => {
     const s = session(sid);
     s.offRules?.();
     s.offRules = mu.settings.watch(ROUTES_KEY, (_v, meta) => {
-      if (!meta?.replay) emit(sid);
+      if (!meta?.replay) {
+        emit(sid);
+        schedule(sid);
+      }
     }, scope(sid));
+  };
+  const unfollow = (s) => {
+    if (s.fns.size || s.attached) return;
+    s.offRules?.();
+    s.offRules = null;
+    if (s.timer) {
+      clearTimeout(s.timer);
+      s.timer = null;
+    }
+  };
+  const drop = (s) => {
+    s.offRules?.();
+    s.offRules = null;
+    if (s.timer) {
+      clearTimeout(s.timer);
+      s.timer = null;
+    }
   };
   return {
     deliver(target, line, ctx) {
@@ -464,10 +556,10 @@ function createStore(mu) {
       const s = session(ctx.sid);
       if (ctx.worldId && ctx.worldId !== s.worldId) {
         s.worldId = ctx.worldId;
-        if (s.fns.size) followRules(ctx.sid);
+        if (s.offRules) followRules(ctx.sid);
       }
       const buf = s.lines[label] ??= [];
-      buf.push(line);
+      buf.push({ line, edit: !ctx.rule });
       if (buf.length > FEED_CAP) buf.splice(0, buf.length - FEED_CAP);
       if (s.viewing !== label) s.unread[label] = (s.unread[label] ?? 0) + 1;
       emit(ctx.sid);
@@ -478,10 +570,32 @@ function createStore(mu) {
       if (!s.offRules) followRules(sid);
       fn(get(sid));
       return () => {
-        if (!s.fns.delete(fn) || s.fns.size) return;
-        s.offRules?.();
-        s.offRules = null;
+        if (s.fns.delete(fn)) unfollow(s);
       };
+    },
+    attach(sid, worldId) {
+      const s = session(sid);
+      s.attached++;
+      if (worldId && worldId !== s.worldId) {
+        s.worldId = worldId;
+        if (s.offRules) followRules(sid);
+      }
+      if (!s.offRules) followRules(sid);
+      let on = true;
+      return () => {
+        if (!on) return;
+        on = false;
+        s.attached--;
+        unfollow(s);
+      };
+    },
+    rebuild,
+    flush() {
+      for (const [sid, s] of sessions) if (s.timer) {
+        clearTimeout(s.timer);
+        s.timer = null;
+        rebuild(sid);
+      }
     },
     viewing(label, sid) {
       const s = session(sid);
@@ -494,6 +608,14 @@ function createStore(mu) {
     },
     clear(label, sid) {
       const s = session(sid);
+      let cut = s.lines[label]?.at(-1)?.line;
+      try {
+        const last = typeof mu.lines?.query === "function" ? mu.lines.query(sid, { limit: 1 }) : null;
+        const l = Array.isArray(last) ? last[0]?.line : void 0;
+        if (l && (!cut || before(cut, l) < 0)) cut = l;
+      } catch {
+      }
+      if (cut) s.cleared[label] = cut;
       s.lines[label] = [];
       s.unread[label] = 0;
       emit(sid);
@@ -501,8 +623,12 @@ function createStore(mu) {
     forget(sid) {
       const s = sessions.get(sid);
       if (!s) return;
-      s.offRules?.();
+      drop(s);
       sessions.delete(sid);
+    },
+    dispose() {
+      for (const s of sessions.values()) drop(s);
+      sessions.clear();
     },
     labelsFor,
     get
@@ -804,10 +930,15 @@ var index_default = defineExtension({
     subs.push(mu.settings.define({ ...SETTINGS, component: mu.panels.vue(createSettingsPage(mu)) }));
     subs.push(mu.lines.route({ id: "feeds", rules: ROUTES_KEY, edits: true, deliver: (t, line, c) => store.deliver(t, line, c) }));
     const reading = readers((label, sid) => store.viewing(label, sid));
-    subs.push(mu.sessions.each((s) => () => {
-      reading.forget(s.id);
-      store.forget(s.id);
+    subs.push(mu.sessions.each((s) => {
+      const off = store.attach(s.id, s.worldId);
+      return () => {
+        off();
+        reading.forget(s.id);
+        store.forget(s.id);
+      };
     }));
+    subs.push(() => store.dispose());
     const mount = mu.panels.vue(createPanel(mu, store, reading));
     subs.push(mu.panels.register({ id: "feeds", title: COPY.title, mount, perSession: true, defaultPosition: "right-bottom", order: 50, show: "always" }));
     subs.push(mu.panels.register({ id: "feed", title: COPY.feedTitle, mount, perSession: true, singleton: false, defaultPosition: "float", inViewsMenu: false }));

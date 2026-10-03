@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.0
+
+- Changing your rules now applies them to earlier lines too, not only to new ones. A new `(.+)` Regex rule → `all` fills the `all` feed at once with the session's earlier chat and terminal lines, ANSI colours included. Changing a rule's feed moves its lines to the new tab; disabling or deleting a rule takes its lines out of the feed.
+- This happens for every open session of the world, with or without a Feeds panel open, about 150 ms after the last edit. It uses the lines the client holds (SDK 1.15 `mu.lines.query`, up to 5000), plus the lines the feeds already have that the terminal no longer holds (such as moved lines), matched again. Each feed keeps its newest 500.
+- Lines that triggers or other extensions copied or moved into a feed are kept through a rebuild, in order.
+- Rebuilt history is not unread. Lines that were unread before the change stay unread if they're still in the feed.
+- A cleared feed stays cleared: a rebuild doesn't bring back lines from before the Clear.
+- The terminal itself is not rewritten. A new Move rule copies earlier lines into its feed but doesn't remove them from the terminal; removing one doesn't put lines back.
+- It still loads on a μClient without SDK 1.15 (`api ^1.14`, `mu.lines.query` is feature-detected). There, rules apply to new lines only, as in 2.1.
+- Built against `@runmu.sh/sdk` 1.15 and `@runmu.sh/dev` 0.4.
+
 ## 2.1.0
 
 - Each rule has a **Text | Regex** toggle for how its Match is read, and nothing is guessed from what you type. Text matches the characters exactly, anywhere in the line, ignoring case (`[vox]`, `(.+)` and `/x/` are literal). Regex reads the Match as a regular expression, ignoring case: `.+` or `(.+)` takes every line. Before this, a rule like `(.+)` without slashes was read as text and matched nothing.
